@@ -838,9 +838,26 @@ async function mapWithConcurrency(items, concurrency, mapper) {
 // Contact customer.lastOrder fills in cadence when Company.orders is empty but
 // the linked buyer accounts have real order history (see uniqueContactCustomers).
 //
-// `mode: 'commissions'` skips CRM-only fields (notes, contacts, spend stats)
-// so the commission rollup doesn't pay for a full Customers-tab payload
-// before it even starts the per-company revenue queries.
+// Main contact first, then any other company contact, then the location phone.
+// Company itself has no email; reps need the buyer they actually call.
+const companyContactDetails = (company) => {
+  const contacts = (company.contacts?.edges || [])
+    .map((edge) => edge?.node)
+    .filter((node) => node?.customer);
+  contacts.sort((a, b) => Number(Boolean(b.isMainContact)) - Number(Boolean(a.isMainContact)));
+  const email = contacts
+    .map((contact) => (contact.customer.defaultEmailAddress?.emailAddress || '').trim())
+    .find(Boolean) || '';
+  const contactPhone = contacts
+    .map((contact) => (contact.customer.defaultPhoneNumber?.phoneNumber || '').trim())
+    .find(Boolean) || '';
+  const location = company.locations?.edges?.[0]?.node;
+  const locationPhone = (location?.phone || location?.shippingAddress?.phone || '').trim();
+  return { email, phone: contactPhone || locationPhone };
+};
+
+// `mode: 'commissions'` skips CRM-only fields (notes, spend stats) and keeps
+// only assignment data plus the contact email and phone shown on each row.
 const fetchAllCompanies = async (client, { mode = 'full', onProgress } = {}) => {
   if (!client) return [];
   const query = mode === 'commissions'
@@ -851,6 +868,31 @@ const fetchAllCompanies = async (client, { mode = 'full', onProgress } = {}) => 
           node {
             id
             name
+            contacts(first: 5) {
+              edges {
+                node {
+                  isMainContact
+                  customer {
+                    defaultEmailAddress {
+                      emailAddress
+                    }
+                    defaultPhoneNumber {
+                      phoneNumber
+                    }
+                  }
+                }
+              }
+            }
+            locations(first: 1) {
+              edges {
+                node {
+                  phone
+                  shippingAddress {
+                    phone
+                  }
+                }
+              }
+            }
             recentOrders: orders(first: 1, reverse: true) {
               edges {
                 node {
@@ -1028,8 +1070,8 @@ const fetchAllCompanies = async (client, { mode = 'full', onProgress } = {}) => 
     const pageInfo = companiesData.pageInfo || { hasNextPage: false, endCursor: null };
     page += 1;
 
-    // In commissions mode, skip expensive enrichment (notes, performance stats);
-    // we only need id, name, and assigned staff data for commission calculations
+    // In commissions mode, skip expensive enrichment (notes, performance stats).
+    // Keep id, name, assignment, and the contact email/phone shown under each company.
     if (mode === 'commissions') {
       all.push(...edges.map((edge) => {
         const company = edge.node;
@@ -1045,7 +1087,14 @@ const fetchAllCompanies = async (client, { mode = 'full', onProgress } = {}) => 
         } catch (e) {
           console.warn('Failed to parse assigned staff for company', company.id, e.message);
         }
-        return { id: company.id, name: company.name, assignedStaff };
+        const contact = companyContactDetails(company);
+        return {
+          id: company.id,
+          name: company.name,
+          assignedStaff,
+          email: contact.email,
+          phone: contact.phone,
+        };
       }));
     } else {
       all.push(...edges.map((edge) => enrichCompany(edge.node)));
@@ -2407,6 +2456,8 @@ app.get('/api/commissions', validateAuthenticatedSession, async (req, res) => {
       commissionsMap[staffRecord.id].companies.push({
         companyId: company.id,
         companyName: company.name,
+        email: company.email || '',
+        phone: company.phone || '',
         revenue,
         commission,
         assignedAt: assigned.assignedAt || null,
@@ -2522,6 +2573,8 @@ app.get('/api/commissions/:staffId', validateAuthenticatedSession, async (req, r
       repCommissions.companies.push({
         companyId: company.id,
         companyName: company.name,
+        email: company.email || '',
+        phone: company.phone || '',
         revenue,
         commission,
         assignedAt: company.assignedStaff.assignedAt || null,
