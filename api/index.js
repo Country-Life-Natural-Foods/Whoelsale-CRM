@@ -265,8 +265,10 @@ const COMMISSION_AGGREGATION_TIMEOUT_MS = 55000;
 // Sized against vercel.json's 300s maxDuration, not against each other by
 // accident: the chunk stops paging at 240s, leaving 30s to write its terminal
 // status before the guard fires and another 30s before Vercel hard-kills the
-// invocation. The cron fires every minute; claimBackfill's lease plus the
-// per-page heartbeat keep a second invocation from paging the same cursor.
+// invocation. The cron runs once a day (08:00 UTC). A per-minute schedule
+// keeps Neon from scaling to zero and burns the free-plan compute allowance.
+// claimBackfill's lease plus the per-page heartbeat still stop a second
+// invocation from paging the same cursor.
 const METRICS_CRON_TIMEOUT_MS = 270000;
 const METRICS_CRON_WORK_MS = 240000;
 
@@ -3076,7 +3078,7 @@ function authorizeMetricsCron(req) {
     return true;
   }
   // Older Vercel Cron set `x-vercel-cron: 1`. Current invocations set
-  // `x-vercel-cron-schedule` to the expression (for example `* * * * *`) and
+  // `x-vercel-cron-schedule` to the expression (for example `0 8 * * *`) and
   // use user-agent `vercel-cron/1.0`. Vercel strips client-supplied
   // `x-vercel-*` headers, so the schedule header is not spoofable. CRON_SECRET
   // is optional; when it is unset, that header is what lets the backfill run.
