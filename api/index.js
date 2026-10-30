@@ -860,7 +860,35 @@ const companyContactDetails = (company) => {
 
 // `mode: 'commissions'` skips CRM-only fields (notes, spend stats) and keeps
 // only assignment data plus the contact email and phone shown on each row.
-const fetchAllCompanies = async (client, { mode = 'full', onProgress } = {}) => {
+// Commissions-mode company list (id, name, assignment, contact) is the slow
+// part of every commissions call: ~15s of sequential Shopify paging. It only
+// changes when a company or assignment changes, so share one copy per shop for
+// 5 minutes across /api/commissions, /monthly and reports. Assignment writes
+// already call commissionCache.clear(shop), which drops it. Concurrent callers
+// share one in-flight fetch instead of each paging Shopify.
+const COMPANIES_COMMISSIONS_KEY = 'companies:commissions';
+const companiesCommissionsInflight = new Map();
+
+const fetchAllCompanies = async (client, options = {}) => {
+  if (!client) return [];
+  const shop = options.mode === 'commissions' && !options.onProgress ? shopFromClient(client) : null;
+  if (!shop) return fetchAllCompaniesFromShopify(client, options);
+
+  const cached = commissionCache.get(shop, COMPANIES_COMMISSIONS_KEY);
+  if (cached) return cached;
+  if (companiesCommissionsInflight.has(shop)) return companiesCommissionsInflight.get(shop);
+
+  const pending = fetchAllCompaniesFromShopify(client, options)
+    .then((companies) => {
+      commissionCache.set(shop, COMPANIES_COMMISSIONS_KEY, companies);
+      return companies;
+    })
+    .finally(() => companiesCommissionsInflight.delete(shop));
+  companiesCommissionsInflight.set(shop, pending);
+  return pending;
+};
+
+const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress } = {}) => {
   if (!client) return [];
   const query = mode === 'commissions'
     ? `
