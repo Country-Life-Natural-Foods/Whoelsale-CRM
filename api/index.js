@@ -2532,6 +2532,12 @@ app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, re
     }
 
     const shop = shopFromClient(client);
+    // Loading every company and summing 12 months is the slow part (~15s), and
+    // history only changes when an order lands, so cache per viewer for 5 min.
+    const monthlyCacheKey = `monthly:${isUserManager ? 'team' : ownStaff.id}`;
+    const cachedMonthly = shop ? commissionCache.get(shop, monthlyCacheKey) : null;
+    if (cachedMonthly) return res.json(cachedMonthly);
+
     const rollupReady = Boolean(shop && companyMetrics.enabled && await companyMetrics.isComplete(shop));
     if (!rollupReady) {
       return res.json({
@@ -2594,7 +2600,7 @@ app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, re
       : 0;
     const best = months.reduce((top, m) => (m.commission > (top?.commission || 0) ? m : top), null);
 
-    res.json({
+    const payload = {
       available: true,
       isManager: isUserManager,
       months,
@@ -2602,7 +2608,9 @@ app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, re
       average,
       best: best ? { month: best.month, label: best.fullLabel, commission: best.commission } : null,
       generatedAt: new Date().toISOString(),
-    });
+    };
+    if (shop) commissionCache.set(shop, monthlyCacheKey, payload);
+    res.json(payload);
   } catch (error) {
     if (error instanceof GraphqlQueryError || error instanceof HttpResponseError) {
       return sendShopifyApiError(res, error);
