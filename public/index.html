@@ -590,6 +590,9 @@
                 return;
             }
             if (access.unlocked) {
+                // The access check itself is quick; the wait that follows is
+                // loading the figures, so say so.
+                window.pageProgress.begin({ total: 100, label: 'Loading commissions' });
                 await loadCommissions();
                 return;
             }
