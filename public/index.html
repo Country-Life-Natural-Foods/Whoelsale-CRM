@@ -253,6 +253,7 @@
         </div>
         <div class="flex-1 overflow-y-auto">
             <div class="max-w-[1600px] mx-auto w-full p-4 md:p-6">
+                <div id="commissions-monthly" class="hidden bg-white rounded-xl border border-zinc-200 p-5 mb-4"></div>
                 <div class="bg-white rounded-xl border border-zinc-200 overflow-hidden" id="commissions-table">
                     <div class="divide-y divide-zinc-200" id="commissions-list">
                         <!-- Commissions populated by JS -->
@@ -1433,6 +1434,7 @@
             commissionData = data;
             renderCommissions();
             window.pageProgress.finish();
+            loadMonthlyCommissions();
         } catch (e) {
             if (commissionData) {
                 window.pageProgress.finish();
@@ -1441,6 +1443,139 @@
             window.pageProgress.fail();
             showError('Failed to load commissions: ' + e.message);
         }
+    }
+
+    // Month-by-month trend + heat strip. Loaded after the main commissions call
+    // so a slow or unavailable history never blocks the headline numbers.
+    let monthlyCommissionData = null;
+
+    async function loadMonthlyCommissions() {
+        const url = apiUrl('/api/commissions/monthly');
+        const cached = window.AppDataCache?.peek(url);
+        if (cached && !cached.code) {
+            monthlyCommissionData = cached;
+            renderMonthlyCommissions();
+        }
+        try {
+            const res = await window.shopifyApiFetch(url);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to load monthly earnings');
+            window.AppDataCache?.set(url, data);
+            monthlyCommissionData = data;
+            renderMonthlyCommissions();
+        } catch (e) {
+            console.warn('Monthly earnings unavailable:', e.message);
+            if (!monthlyCommissionData) {
+                document.getElementById('commissions-monthly').classList.add('hidden');
+            }
+        }
+    }
+
+    function renderMonthlyCommissions() {
+        const el = document.getElementById('commissions-monthly');
+        const d = monthlyCommissionData;
+        if (!el || !d) return;
+        el.classList.remove('hidden');
+
+        const dollars = (n) => `$${Math.round(n || 0).toLocaleString('en-US')}`;
+        const exact = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const who = d.isManager ? 'Team earnings' : 'Monthly earnings';
+
+        if (!d.available) {
+            el.innerHTML = `
+                <h3 class="text-[15px] font-semibold">${who}</h3>
+                <p class="text-xs text-zinc-500 mt-1">${escapeHtml(d.reason || 'Monthly history is not available yet.')}</p>`;
+            return;
+        }
+
+        const months = d.months || [];
+        const max = Math.max(...months.map((m) => m.commission), 0);
+        if (max <= 0) {
+            el.innerHTML = `
+                <h3 class="text-[15px] font-semibold">${who}</h3>
+                <p class="text-xs text-zinc-500 mt-1">No commission earned in the last ${months.length} months yet.</p>`;
+            return;
+        }
+
+        const levels = [
+            { bg: '#d1fae5', fg: '#064e3b' },
+            { bg: '#a7f3d0', fg: '#064e3b' },
+            { bg: '#6ee7b7', fg: '#064e3b' },
+            { bg: '#047857', fg: '#ffffff' },
+            { bg: '#065f46', fg: '#ffffff' },
+        ];
+        const levelFor = (v) => {
+            const r = v / max;
+            if (r >= 0.999) return 4;
+            if (r >= 0.85) return 3;
+            if (r >= 0.7) return 2;
+            if (r >= 0.5) return 1;
+            return 0;
+        };
+
+        const pts = months.map((m, i) => ({
+            x: 50 + i * 100,
+            y: 190 - (m.commission / max) * 165,
+            inProgress: m.inProgress,
+        }));
+        const last = pts[pts.length - 1];
+        const closedPts = last?.inProgress ? pts.slice(0, -1) : pts;
+        const toPoly = (arr) => arr.map((p) => `${p.x},${p.y.toFixed(1)}`).join(' ');
+        const area = `${pts[0].x},190 ${toPoly(pts)} ${last.x},190`;
+        const bestIdx = months.findIndex((m) => d.best && m.month === d.best.month);
+
+        const chart = `
+            <svg viewBox="0 0 1200 200" class="w-full h-auto block" role="img" aria-label="Line chart of monthly commission over the last ${months.length} months">
+                <line x1="0" y1="190" x2="1200" y2="190" stroke="#e4e4e7"/>
+                <line x1="0" y1="120" x2="1200" y2="120" stroke="#f4f4f5"/>
+                <line x1="0" y1="50" x2="1200" y2="50" stroke="#f4f4f5"/>
+                <polygon points="${area}" fill="#d1fae5" opacity="0.6"/>
+                <polyline points="${toPoly(closedPts)}" fill="none" stroke="#059669" stroke-width="3" stroke-linejoin="round"/>
+                ${last.inProgress && pts.length > 1 ? `<polyline points="${toPoly(pts.slice(-2))}" fill="none" stroke="#059669" stroke-width="3" stroke-dasharray="6 5"/>` : ''}
+                ${bestIdx >= 0 ? `<circle cx="${pts[bestIdx].x}" cy="${pts[bestIdx].y.toFixed(1)}" r="6" fill="#059669"/>` : ''}
+                ${last.inProgress ? `<circle cx="${last.x}" cy="${last.y.toFixed(1)}" r="6" fill="#fff" stroke="#059669" stroke-width="2.5"/>` : ''}
+            </svg>`;
+
+        const tiles = months.map((m) => {
+            const lv = levels[levelFor(m.commission)];
+            const empty = m.commission <= 0;
+            const style = m.inProgress
+                ? 'background:#fff;color:#064e3b;border:1.5px dashed #34d399;'
+                : empty
+                    ? 'background:#f4f4f5;color:#52525b;'
+                    : `background:${lv.bg};color:${lv.fg};`;
+            return `
+                <div class="rounded-lg px-1.5 py-2.5 text-center" style="${style}" title="${escapeHtml(m.fullLabel)}: ${exact(m.commission)} on ${exact(m.revenue)} revenue${m.inProgress ? ' (month in progress)' : ''}">
+                    <p class="text-[11px] font-medium">${escapeHtml(m.label)}${m.inProgress ? '*' : ''}</p>
+                    <p class="text-sm font-bold mt-1">${dollars(m.commission)}</p>
+                </div>`;
+        }).join('');
+
+        const ramp = levels.map((l) => `<span class="inline-block w-4 h-4 rounded" style="background:${l.bg}"></span>`).join('');
+        const hasInProgress = months.some((m) => m.inProgress);
+
+        el.innerHTML = `
+            <div class="flex flex-wrap justify-between items-end gap-4">
+                <div>
+                    <h3 class="text-[15px] font-semibold">${who}</h3>
+                    <p class="text-xs text-zinc-500 mt-1">Trend and month-by-month totals, last ${months.length} months</p>
+                </div>
+                <div class="flex flex-wrap gap-7">
+                    <div><p class="text-[11px] text-zinc-500">${months.length}-month total</p><p class="text-xl font-bold mt-0.5">${exact(d.total)}</p></div>
+                    <div><p class="text-[11px] text-zinc-500">Monthly average</p><p class="text-xl font-bold mt-0.5">${dollars(d.average)}</p></div>
+                    <div><p class="text-[11px] text-zinc-500">Best month</p><p class="text-xl font-bold mt-0.5 text-emerald-700">${d.best ? `${escapeHtml(d.best.label.split(' ')[0].slice(0, 3))} · ${dollars(d.best.commission)}` : '—'}</p></div>
+                </div>
+            </div>
+            <div class="mt-5 overflow-x-auto">
+                <div style="min-width:760px">
+                    ${chart}
+                    <div class="grid gap-1.5 mt-2.5" style="grid-template-columns:repeat(${months.length},minmax(0,1fr))">${tiles}</div>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2 mt-3.5 text-[11px] text-zinc-500">
+                <span>${hasInProgress ? '* Month in progress (dashed). ' : ''}Darker tile = more commission. Uses your current commission rate.</span>
+                <span class="flex items-center gap-1.5">Less ${ramp} More</span>
+            </div>`;
     }
 
     function renderCommissions() {
