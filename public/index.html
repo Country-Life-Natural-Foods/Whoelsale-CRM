@@ -1455,6 +1455,12 @@
         if (cached && !cached.code) {
             monthlyCommissionData = cached;
             renderMonthlyCommissions();
+        } else if (!monthlyCommissionData) {
+            const el = document.getElementById('commissions-monthly');
+            el.classList.remove('hidden');
+            el.innerHTML = `
+                <h3 class="text-[15px] font-semibold">Monthly earnings</h3>
+                <p class="text-xs text-zinc-500 mt-1">Loading your month-by-month history…</p>`;
         }
         try {
             const res = await window.shopifyApiFetch(url);
@@ -1466,7 +1472,9 @@
         } catch (e) {
             console.warn('Monthly earnings unavailable:', e.message);
             if (!monthlyCommissionData) {
-                document.getElementById('commissions-monthly').classList.add('hidden');
+                document.getElementById('commissions-monthly').innerHTML = `
+                    <h3 class="text-[15px] font-semibold">Monthly earnings</h3>
+                    <p class="text-xs text-zinc-500 mt-1">Couldn't load monthly history right now. Reload to try again.</p>`;
             }
         }
     }
