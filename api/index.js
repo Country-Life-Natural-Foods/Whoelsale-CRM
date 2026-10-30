@@ -2591,7 +2591,7 @@ app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, re
 
     const periods = trailingMonthPeriods(MONTHLY_COMMISSION_WINDOW);
     const currentMonth = periods[periods.length - 1].month;
-    const months = await Promise.all(periods.map(async (period) => {
+    const rows = await Promise.all(periods.map(async (period) => {
       const specs = [];
       const specJobs = [];
       for (const job of jobs) {
@@ -2601,42 +2601,71 @@ app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, re
         specJobs.push(job);
       }
       const sums = specs.length ? await companyMetrics.sumJobs(shop, specs) : new Map();
-      let revenue = 0;
-      let commission = 0;
+      const byStaff = new Map();
       specJobs.forEach((job) => {
         const spend = sums.get(job.company.id)?.totalSpend || 0;
-        revenue += spend;
-        commission += (spend * job.staffRecord.commissionTier) / 100;
+        const entry = byStaff.get(job.staffRecord.id) || { revenue: 0, commission: 0 };
+        entry.revenue += spend;
+        entry.commission += (spend * job.staffRecord.commissionTier) / 100;
+        byStaff.set(job.staffRecord.id, entry);
       });
       return {
-        month: period.month,
-        label: period.start.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
-        fullLabel: period.label,
-        revenue,
-        commission,
-        inProgress: period.month === currentMonth,
+        period,
+        byStaff,
       };
     }));
+
+    const monthMeta = (period) => ({
+      month: period.month,
+      label: period.start.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
+      fullLabel: period.label,
+      inProgress: period.month === currentMonth,
+    });
 
     // Average only closed months from the first month with earnings, so a rep
     // who started mid-year isn't dragged down by months before they had any
     // companies.
-    const firstActive = months.findIndex((m) => m.commission > 0);
-    const closedActive = firstActive < 0 ? [] : months.slice(firstActive).filter((m) => !m.inProgress);
-    const average = closedActive.length
-      ? closedActive.reduce((sum, m) => sum + m.commission, 0) / closedActive.length
-      : 0;
-    const best = months.reduce((top, m) => (m.commission > (top?.commission || 0) ? m : top), null);
+    const summarize = (months) => {
+      const firstActive = months.findIndex((m) => m.commission > 0);
+      const closedActive = firstActive < 0 ? [] : months.slice(firstActive).filter((m) => !m.inProgress);
+      const average = closedActive.length
+        ? closedActive.reduce((sum, m) => sum + m.commission, 0) / closedActive.length
+        : 0;
+      const best = months.reduce((top, m) => (m.commission > (top?.commission || 0) ? m : top), null);
+      return {
+        months,
+        total: months.reduce((sum, m) => sum + m.commission, 0),
+        average,
+        best: best ? { month: best.month, label: best.fullLabel, commission: best.commission } : null,
+      };
+    };
 
+    const seriesFor = (staffIds) => summarize(rows.map(({ period, byStaff }) => {
+      let revenue = 0;
+      let commission = 0;
+      for (const id of staffIds) {
+        const e = byStaff.get(id);
+        if (e) {
+          revenue += e.revenue;
+          commission += e.commission;
+        }
+      }
+      return { ...monthMeta(period), revenue, commission };
+    }));
+
+    const visibleStaffIds = isUserManager ? allStaff.map((s) => s.id) : [ownStaff.id];
     const payload = {
       available: true,
       isManager: isUserManager,
-      months,
-      total: months.reduce((sum, m) => sum + m.commission, 0),
-      average,
-      best: best ? { month: best.month, label: best.fullLabel, commission: best.commission } : null,
+      ...seriesFor(visibleStaffIds),
       generatedAt: new Date().toISOString(),
     };
+    // Managers also get each rep's own series for the per-rep view.
+    if (isUserManager) {
+      payload.reps = allStaff
+        .map((s) => ({ staffId: s.id, name: s.name, ...seriesFor([s.id]) }))
+        .sort((x, y) => y.total - x.total);
+    }
     if (shop) commissionCache.set(shop, monthlyCacheKey, payload);
     res.json(payload);
   } catch (error) {
