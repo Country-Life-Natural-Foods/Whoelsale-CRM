@@ -1451,6 +1451,12 @@
     // Month-by-month trend + heat strip. Loaded after the main commissions call
     // so a slow or unavailable history never blocks the headline numbers.
     let monthlyCommissionData = null;
+    let monthlyView = 'team'; // 'team' or a staffId (managers only)
+
+    function setMonthlyView(value) {
+        monthlyView = value;
+        renderMonthlyCommissions();
+    }
 
     async function loadMonthlyCommissions() {
         const url = apiUrl('/api/commissions/monthly');
@@ -1490,7 +1496,21 @@
 
         const dollars = (n) => `$${Math.round(n || 0).toLocaleString('en-US')}`;
         const exact = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const who = d.isManager ? 'Team earnings' : 'Monthly earnings';
+        // Managers can switch between the team total and any single rep.
+        const selectedRep = d.isManager && monthlyView !== 'team'
+            ? (d.reps || []).find((r) => r.staffId === monthlyView)
+            : null;
+        const series = selectedRep || d;
+        const who = selectedRep
+            ? `${escapeHtml(selectedRep.name)} · earnings`
+            : (d.isManager ? 'Team earnings' : 'Monthly earnings');
+        const picker = d.isManager && d.reps?.length ? `
+            <label class="flex items-center gap-2 text-xs text-zinc-500">View
+                <select onchange="setMonthlyView(this.value)" class="border border-zinc-200 rounded-lg px-2 py-1.5 text-sm text-zinc-900 bg-white">
+                    <option value="team"${selectedRep ? '' : ' selected'}>Team total</option>
+                    ${d.reps.map((r) => `<option value="${escapeHtml(r.staffId)}"${selectedRep?.staffId === r.staffId ? ' selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+                </select>
+            </label>` : '';
 
         if (!d.available) {
             el.innerHTML = `
@@ -1499,12 +1519,17 @@
             return;
         }
 
-        const months = d.months || [];
+        const months = series.months || [];
         const max = Math.max(...months.map((m) => m.commission), 0);
         if (max <= 0) {
             el.innerHTML = `
-                <h3 class="text-[15px] font-semibold">${who}</h3>
-                <p class="text-xs text-zinc-500 mt-1">No commission earned in the last ${months.length} months yet.</p>`;
+                <div class="flex flex-wrap justify-between items-start gap-3">
+                    <div>
+                        <h3 class="text-[15px] font-semibold">${who}</h3>
+                        <p class="text-xs text-zinc-500 mt-1">No commission earned in the last ${months.length} months yet.</p>
+                    </div>
+                    ${picker}
+                </div>`;
             return;
         }
 
@@ -1533,7 +1558,7 @@
         const closedPts = last?.inProgress ? pts.slice(0, -1) : pts;
         const toPoly = (arr) => arr.map((p) => `${p.x},${p.y.toFixed(1)}`).join(' ');
         const area = `${pts[0].x},190 ${toPoly(pts)} ${last.x},190`;
-        const bestIdx = months.findIndex((m) => d.best && m.month === d.best.month);
+        const bestIdx = months.findIndex((m) => series.best && m.month === series.best.month);
 
         const chart = `
             <svg viewBox="0 0 1200 200" class="w-full h-auto block" role="img" aria-label="Line chart of monthly commission over the last ${months.length} months">
@@ -1567,14 +1592,17 @@
 
         el.innerHTML = `
             <div class="flex flex-wrap justify-between items-end gap-4">
-                <div>
-                    <h3 class="text-[15px] font-semibold">${who}</h3>
-                    <p class="text-xs text-zinc-500 mt-1">Trend and month-by-month totals, last ${months.length} months</p>
+                <div class="flex flex-col gap-3">
+                    <div>
+                        <h3 class="text-[15px] font-semibold">${who}</h3>
+                        <p class="text-xs text-zinc-500 mt-1">Trend and month-by-month totals, last ${months.length} months</p>
+                    </div>
+                    ${picker}
                 </div>
                 <div class="flex flex-wrap gap-7">
-                    <div><p class="text-[11px] text-zinc-500">${months.length}-month total</p><p class="text-xl font-bold mt-0.5">${exact(d.total)}</p></div>
-                    <div><p class="text-[11px] text-zinc-500">Monthly average</p><p class="text-xl font-bold mt-0.5">${dollars(d.average)}</p></div>
-                    <div><p class="text-[11px] text-zinc-500">Best month</p><p class="text-xl font-bold mt-0.5 text-emerald-700">${d.best ? `${escapeHtml(d.best.label.split(' ')[0].slice(0, 3))} · ${dollars(d.best.commission)}` : '—'}</p></div>
+                    <div><p class="text-[11px] text-zinc-500">${months.length}-month total</p><p class="text-xl font-bold mt-0.5">${exact(series.total)}</p></div>
+                    <div><p class="text-[11px] text-zinc-500">Monthly average</p><p class="text-xl font-bold mt-0.5">${dollars(series.average)}</p></div>
+                    <div><p class="text-[11px] text-zinc-500">Best month</p><p class="text-xl font-bold mt-0.5 text-emerald-700">${series.best ? `${escapeHtml(series.best.label.split(' ')[0].slice(0, 3))} · ${dollars(series.best.commission)}` : '—'}</p></div>
                 </div>
             </div>
             <div class="mt-5 overflow-x-auto">
