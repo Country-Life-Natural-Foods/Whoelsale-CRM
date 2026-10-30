@@ -861,13 +861,32 @@ const companyContactDetails = (company) => {
 // `mode: 'commissions'` skips CRM-only fields (notes, spend stats) and keeps
 // only assignment data plus the contact email and phone shown on each row.
 // Commissions-mode company list (id, name, assignment, contact) is the slow
-// part of every commissions call: ~15s of sequential Shopify paging. It only
-// changes when a company or assignment changes, so share one copy per shop for
-// 5 minutes across /api/commissions, /monthly and reports. Assignment writes
-// already call commissionCache.clear(shop), which drops it. Concurrent callers
-// share one in-flight fetch instead of each paging Shopify.
+// part of every commissions call: ~15s of sequential Shopify paging, because
+// rep assignments live in Shopify metafields. Three layers keep it off the
+// request path:
+//   1. in-memory copy per instance (5 min; cleared with commissionCache.clear)
+//   2. a persisted snapshot in Postgres, shared by every instance and surviving
+//      deploys; served instantly and refreshed in the background once it is
+//      older than 5 min (hard cap 24h, after which we wait for a fresh fetch)
+//   3. Shopify, only when neither exists
+// Assignment writes patch the snapshot directly, so reassignments show at once.
 const COMPANIES_COMMISSIONS_KEY = 'companies:commissions';
+const COMPANIES_SNAPSHOT_FRESH_MS = 5 * 60 * 1000;
+const COMPANIES_SNAPSHOT_MAX_MS = 24 * 60 * 60 * 1000;
 const companiesCommissionsInflight = new Map();
+
+async function refreshCommissionCompanies(client, shop, options) {
+  const companies = await fetchAllCompaniesFromShopify(client, options);
+  commissionCache.set(shop, COMPANIES_COMMISSIONS_KEY, companies);
+  if (companyMetrics.enabled) {
+    try {
+      await companyMetrics.saveCompanySnapshot(shop, companies);
+    } catch (err) {
+      console.error('[commissions] saving company snapshot failed', err);
+    }
+  }
+  return companies;
+}
 
 const fetchAllCompanies = async (client, options = {}) => {
   if (!client) return [];
@@ -878,12 +897,27 @@ const fetchAllCompanies = async (client, options = {}) => {
   if (cached) return cached;
   if (companiesCommissionsInflight.has(shop)) return companiesCommissionsInflight.get(shop);
 
-  const pending = fetchAllCompaniesFromShopify(client, options)
-    .then((companies) => {
-      commissionCache.set(shop, COMPANIES_COMMISSIONS_KEY, companies);
-      return companies;
-    })
-    .finally(() => companiesCommissionsInflight.delete(shop));
+  const pending = (async () => {
+    let snapshot = null;
+    if (companyMetrics.enabled) {
+      try {
+        snapshot = await companyMetrics.getCompanySnapshot(shop);
+      } catch (err) {
+        console.error('[commissions] reading company snapshot failed', err);
+      }
+    }
+    const ageMs = snapshot ? Date.now() - snapshot.updatedAt.getTime() : Infinity;
+    if (snapshot && ageMs < COMPANIES_SNAPSHOT_MAX_MS) {
+      commissionCache.set(shop, COMPANIES_COMMISSIONS_KEY, snapshot.companies);
+      if (ageMs >= COMPANIES_SNAPSHOT_FRESH_MS) {
+        refreshCommissionCompanies(client, shop, options).catch((err) => {
+          console.error('[commissions] background company refresh failed', err);
+        });
+      }
+      return snapshot.companies;
+    }
+    return refreshCommissionCompanies(client, shop, options);
+  })().finally(() => companiesCommissionsInflight.delete(shop));
   companiesCommissionsInflight.set(shop, pending);
   return pending;
 };
@@ -1958,6 +1992,16 @@ app.post('/api/companies/:companyId/assignment', validateAuthenticatedSession, a
     // Clear commission cache since assignment changed
     const shopId = res.locals.shopify?.session?.shop || 'unknown';
     commissionCache.clear(shopId);
+    // Keep the persisted company snapshot in step so the change shows
+    // immediately instead of after the next background refresh.
+    const assignmentShop = shopFromClient(client);
+    if (assignmentShop && companyMetrics.enabled) {
+      try {
+        await companyMetrics.patchCompanySnapshotAssignment(assignmentShop, companyId, assignedStaff);
+      } catch (err) {
+        console.error('[commissions] patching company snapshot failed', err);
+      }
+    }
 
     res.json({ success: true, assignedStaff });
   } catch (error) {
@@ -2591,29 +2635,24 @@ app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, re
 
     const periods = trailingMonthPeriods(MONTHLY_COMMISSION_WINDOW);
     const currentMonth = periods[periods.length - 1].month;
-    const rows = await Promise.all(periods.map(async (period) => {
-      const specs = [];
-      const specJobs = [];
-      for (const job of jobs) {
-        const sinceIso = effectiveSinceForPeriod(job.assigned.assignedAt, period);
-        if (!sinceIso) continue;
-        specs.push({ companyId: job.company.id, sinceIso, untilIso: period.end.toISOString() });
-        specJobs.push(job);
-      }
-      const sums = specs.length ? await companyMetrics.sumJobs(shop, specs) : new Map();
+    // One query for the whole window instead of one per month.
+    const revenueByCompany = await companyMetrics.monthlyRevenueByCompany(
+      shop,
+      jobs.map((job) => ({ companyId: job.company.id, sinceIso: job.assigned.assignedAt })),
+      periods[0].start.toISOString(),
+    );
+    const rows = periods.map((period) => {
       const byStaff = new Map();
-      specJobs.forEach((job) => {
-        const spend = sums.get(job.company.id)?.totalSpend || 0;
+      for (const job of jobs) {
+        const spend = revenueByCompany.get(job.company.id)?.get(period.month) || 0;
+        if (!spend) continue;
         const entry = byStaff.get(job.staffRecord.id) || { revenue: 0, commission: 0 };
         entry.revenue += spend;
         entry.commission += (spend * job.staffRecord.commissionTier) / 100;
         byStaff.set(job.staffRecord.id, entry);
-      });
-      return {
-        period,
-        byStaff,
-      };
-    }));
+      }
+      return { period, byStaff };
+    });
 
     const monthMeta = (period) => ({
       month: period.month,
