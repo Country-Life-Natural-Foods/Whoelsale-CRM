@@ -2492,6 +2492,126 @@ app.get('/api/reports/commissions/export.csv', validateAuthenticatedSession, asy
   }
 });
 
+const MONTHLY_COMMISSION_WINDOW = 12;
+
+// Trailing calendar months ending with the still-open current UTC month,
+// oldest first.
+function trailingMonthPeriods(count) {
+  const now = new Date();
+  const periods = [];
+  for (let back = count - 1; back >= 0; back -= 1) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1));
+    periods.push(resolveReportMonth(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`));
+  }
+  return periods;
+}
+
+// Month-by-month earnings for the Commissions tab trend + heat strip. Same
+// access rules as /api/commissions (own PIN unlocked; reps see only their own
+// companies, managers see the team). Twelve months of per-company paging
+// against Shopify is too slow to do on demand, so this only answers from the
+// Neon rollup and reports `available: false` until that backfill is complete.
+// Must stay registered before /api/commissions/:staffId.
+app.get('/api/commissions/monthly', validateAuthenticatedSession, async (req, res) => {
+  try {
+    const user = await getCurrentUser(req, res);
+    const isUserManager = await isManager(user);
+    const client = await getGraphqlClient(req, res);
+    if (!client) return res.status(401).json({ error: 'Unauthorized' });
+
+    const ownStaff = user?.shopifyUserId ? await staffStore.findByShopifyUserId(user.shopifyUserId) : null;
+    if (!ownStaff) {
+      return res.status(403).json({ error: 'Ask a manager to add you as staff before viewing commissions.' });
+    }
+    if (req.session?.commissionsUnlockedFor !== ownStaff.id) {
+      const pinInfo = await staffStore.getPinInfo(ownStaff.id);
+      return res.status(403).json({
+        error: pinInfo?.pinHash ? 'Enter your 4-digit code to view commissions.' : 'Set a 4-digit code to view commissions.',
+        code: pinInfo?.pinHash ? 'PIN_REQUIRED' : 'PIN_NOT_SET',
+      });
+    }
+
+    const shop = shopFromClient(client);
+    const rollupReady = Boolean(shop && companyMetrics.enabled && await companyMetrics.isComplete(shop));
+    if (!rollupReady) {
+      return res.json({
+        available: false,
+        reason: 'Monthly history is still being prepared. It will appear once order history finishes syncing.',
+        isManager: isUserManager,
+      });
+    }
+
+    const companies = await fetchAllCompanies(client, { mode: 'commissions' });
+    const allStaff = await staffStore.list();
+    const staffById = new Map(allStaff.map((s) => [s.id, s]));
+
+    const jobs = [];
+    for (const company of companies) {
+      const assigned = company.assignedStaff;
+      if (!assigned?.staffId) continue;
+      if (!isUserManager && assigned.staffId !== ownStaff.id) continue;
+      const staffRecord = staffById.get(assigned.staffId);
+      if (!staffRecord) continue;
+      jobs.push({ company, assigned, staffRecord });
+    }
+
+    const periods = trailingMonthPeriods(MONTHLY_COMMISSION_WINDOW);
+    const currentMonth = periods[periods.length - 1].month;
+    const months = await Promise.all(periods.map(async (period) => {
+      const specs = [];
+      const specJobs = [];
+      for (const job of jobs) {
+        const sinceIso = effectiveSinceForPeriod(job.assigned.assignedAt, period);
+        if (!sinceIso) continue;
+        specs.push({ companyId: job.company.id, sinceIso, untilIso: period.end.toISOString() });
+        specJobs.push(job);
+      }
+      const sums = specs.length ? await companyMetrics.sumJobs(shop, specs) : new Map();
+      let revenue = 0;
+      let commission = 0;
+      specJobs.forEach((job) => {
+        const spend = sums.get(job.company.id)?.totalSpend || 0;
+        revenue += spend;
+        commission += (spend * job.staffRecord.commissionTier) / 100;
+      });
+      return {
+        month: period.month,
+        label: period.start.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
+        fullLabel: period.label,
+        revenue,
+        commission,
+        inProgress: period.month === currentMonth,
+      };
+    }));
+
+    // Average only closed months from the first month with earnings, so a rep
+    // who started mid-year isn't dragged down by months before they had any
+    // companies.
+    const firstActive = months.findIndex((m) => m.commission > 0);
+    const closedActive = firstActive < 0 ? [] : months.slice(firstActive).filter((m) => !m.inProgress);
+    const average = closedActive.length
+      ? closedActive.reduce((sum, m) => sum + m.commission, 0) / closedActive.length
+      : 0;
+    const best = months.reduce((top, m) => (m.commission > (top?.commission || 0) ? m : top), null);
+
+    res.json({
+      available: true,
+      isManager: isUserManager,
+      months,
+      total: months.reduce((sum, m) => sum + m.commission, 0),
+      average,
+      best: best ? { month: best.month, label: best.fullLabel, commission: best.commission } : null,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    if (error instanceof GraphqlQueryError || error instanceof HttpResponseError) {
+      return sendShopifyApiError(res, error);
+    }
+    console.error('GET /api/commissions/monthly', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get commissions for a period (with role-based access)
 app.get('/api/commissions', validateAuthenticatedSession, async (req, res) => {
   try {
