@@ -858,6 +858,56 @@ const companyContactDetails = (company) => {
   return { email, phone: contactPhone || locationPhone };
 };
 
+// Everything a rep needs to reach a business, in one slim shape: each buyer
+// contact (name, title, email, phone), the primary location's address/phone,
+// and the headline email/phone. Powers both the Customers search (contact
+// name / email / phone) and the drawer's "Contact information" section.
+const companyContactInfo = (company) => {
+  const nodes = (company.contacts?.edges || [])
+    .map((edge) => edge?.node)
+    .filter((node) => node?.customer);
+  nodes.sort((a, b) => Number(Boolean(b.isMainContact)) - Number(Boolean(a.isMainContact)));
+  const seen = new Set();
+  const contacts = [];
+  for (const node of nodes) {
+    const customer = node.customer;
+    const key = customer.id || customer.defaultEmailAddress?.emailAddress || contacts.length;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const name = [customer.firstName, customer.lastName].filter(Boolean).join(' ').trim()
+      || (customer.displayName || '').trim();
+    contacts.push({
+      name,
+      title: (node.title || '').trim(),
+      email: (customer.defaultEmailAddress?.emailAddress || '').trim(),
+      phone: (customer.defaultPhoneNumber?.phoneNumber || '').trim(),
+      isMain: Boolean(node.isMainContact),
+    });
+  }
+  const location = company.locations?.edges?.[0]?.node;
+  const addr = location?.shippingAddress;
+  const cityLine = [addr?.city, addr?.zoneCode].filter(Boolean).join(', ');
+  const address = addr
+    ? {
+      lines: [addr.address1, addr.address2, [cityLine, addr.zip].filter(Boolean).join(' '), addr.country]
+        .map((line) => (line || '').trim())
+        .filter(Boolean),
+      city: (addr.city || '').trim(),
+      state: (addr.zoneCode || '').trim(),
+      zip: (addr.zip || '').trim(),
+    }
+    : null;
+  const locationPhone = (location?.phone || addr?.phone || '').trim();
+  const headline = companyContactDetails(company);
+  return {
+    contacts,
+    address: address && address.lines.length ? address : null,
+    locationPhone,
+    email: headline.email,
+    phone: headline.phone,
+  };
+};
+
 // `mode: 'commissions'` skips CRM-only fields (notes, spend stats) and keeps
 // only assignment data plus the contact email and phone shown on each row.
 // Commissions-mode company list (id, name, assignment, contact) is the slow
@@ -1014,12 +1064,39 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
             contacts(first: 10) {
               edges {
                 node {
+                  isMainContact
+                  title
                   customer {
                     id
+                    firstName
+                    lastName
+                    displayName
+                    defaultEmailAddress {
+                      emailAddress
+                    }
+                    defaultPhoneNumber {
+                      phoneNumber
+                    }
                     numberOfOrders
                     lastOrder {
                       createdAt
                     }
+                  }
+                }
+              }
+            }
+            locations(first: 1) {
+              edges {
+                node {
+                  phone
+                  shippingAddress {
+                    address1
+                    address2
+                    city
+                    zoneCode
+                    zip
+                    country
+                    phone
                   }
                 }
               }
@@ -1115,6 +1192,7 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
     company.notes = notes;
     company.sampleBox = sampleBox;
     company.assignedStaff = assignedStaff;
+    company.contactInfo = companyContactInfo(company);
 
     return company;
   };
@@ -1123,6 +1201,21 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
   let cursor = null;
   let page = 0;
   const all = [];
+
+  // Ask Shopify for the real company total up front so the progress bar can
+  // count loaded/total instead of guessing "one more page" forever. If the
+  // count is unavailable the total stays 0 and the UI shows an honest
+  // indeterminate bar rather than a made-up number.
+  let totalCompanies = 0;
+  if (typeof onProgress === 'function') {
+    try {
+      const countData = await shopifyGraphql(client, 'query CompaniesTotal { companiesCount { count } }', {}, 'companies count');
+      const n = parseInt(countData?.companiesCount?.count, 10);
+      if (Number.isFinite(n) && n > 0) totalCompanies = n;
+    } catch (e) {
+      console.warn('companiesCount unavailable for progress:', e.message);
+    }
+  }
 
   while (hasNextPage) {
     const data = await shopifyGraphql(client, query, { first: 50, after: cursor }, 'companies');
@@ -1168,8 +1261,9 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
     cursor = pageInfo.endCursor || null;
     if (typeof onProgress === 'function') {
       onProgress({
-        done: page,
-        total: hasNextPage ? page + 1 : page,
+        done: all.length,
+        total: totalCompanies ? Math.max(totalCompanies, all.length) : 0,
+        page,
         loaded: all.length,
         hasNextPage,
       });
@@ -1322,7 +1416,7 @@ app.get('/api/companies', validateAuthenticatedSession, async (req, res) => {
             done: progress.done,
             total: progress.total,
             loaded: progress.loaded,
-            label: `Loaded ${progress.loaded} companies`,
+            label: progress.total > 0 ? 'Loading companies' : `Loaded ${progress.loaded} companies`,
           });
         }
         : undefined,

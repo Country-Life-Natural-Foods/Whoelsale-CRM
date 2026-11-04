@@ -120,7 +120,7 @@
             <div class="max-w-[1600px] mx-auto space-y-4">
                 <div class="relative">
                     <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-sm">search</span>
-                    <input id="company-search" type="text" placeholder="Search by company name..." class="w-full pl-9 pr-4 py-2 bg-zinc-50 border border-zinc-200 rounded-md text-sm focus:ring-2 focus:ring-[#008060] focus:border-[#008060] outline-none transition-all" onkeyup="onCompanySearchInput()"/>
+                    <input id="company-search" type="text" placeholder="Search by company, contact name, email or phone..." class="w-full pl-9 pr-4 py-2 bg-zinc-50 border border-zinc-200 rounded-md text-sm focus:ring-2 focus:ring-[#008060] focus:border-[#008060] outline-none transition-all" onkeyup="onCompanySearchInput()"/>
                 </div>
                 <div class="filters-row">
                     <div class="filter-btns">
@@ -440,6 +440,14 @@
                     <span class="material-symbols-outlined text-lg text-zinc-400 group-open:rotate-180 transition-transform">expand_more</span>
                 </summary>
                 <div id="buying-intelligence" class="px-4 pb-4"></div>
+            </details>
+
+            <details id="contact-section" class="group border-b border-zinc-200">
+                <summary class="cursor-pointer list-none p-4 flex items-center justify-between font-semibold text-sm hover:bg-zinc-50">
+                    <span class="flex items-center gap-2"><span class="material-symbols-outlined text-lg text-zinc-500">contact_page</span>Contact information</span>
+                    <span class="material-symbols-outlined text-lg text-zinc-400 group-open:rotate-180 transition-transform">expand_more</span>
+                </summary>
+                <div id="contact-info" class="px-4 pb-4"></div>
             </details>
         </div>
     </div>
@@ -971,10 +979,41 @@
         return `<span class="font-medium text-zinc-900">${c.assignedStaff.name}</span>`;
     }
 
+    // Search matches company name, contact names/titles, emails and phone
+    // numbers (digits only, so "5551234567" finds "(555) 123-4567"). Every
+    // word typed must match somewhere, so "michael attagirl" narrows down.
+    const companySearchIndex = new WeakMap();
+    function companySearchHaystack(c) {
+        let entry = companySearchIndex.get(c);
+        if (entry) return entry;
+        const info = c.contactInfo || {};
+        const parts = [c.name, info.email, info.phone, info.locationPhone];
+        (info.contacts || []).forEach(ct => parts.push(ct.name, ct.title, ct.email, ct.phone));
+        const text = parts.filter(Boolean).join(' \n ').toLowerCase();
+        entry = { text, digits: text.replace(/\D+/g, '') };
+        companySearchIndex.set(c, entry);
+        return entry;
+    }
+    function buildCompanySearchMatcher(query) {
+        const tokens = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+        if (!tokens.length) return () => true;
+        return (c) => {
+            const { text, digits } = companySearchHaystack(c);
+            return tokens.every(token => {
+                if (text.includes(token)) return true;
+                const tokenDigits = token.replace(/\D+/g, '');
+                // Treat as a phone search only when it looks like one (3+ digits,
+                // and the token is mostly digits/phone punctuation).
+                return tokenDigits.length >= 3 && /^[\d()+.\-]+$/.test(token) && digits.includes(tokenDigits);
+            });
+        };
+    }
+
     function renderCustomers() {
-        const search = document.getElementById('company-search').value.toLowerCase();
+        const search = document.getElementById('company-search').value;
+        const matcher = buildCompanySearchMatcher(search);
         const filtered = companies.filter(c => {
-            const matchesSearch = (c.name || '').toLowerCase().includes(search);
+            const matchesSearch = matcher(c);
             const matchesFilter = shouldShowCompany(c);
             return matchesSearch && matchesFilter;
         }).sort((a, b) => {
@@ -1094,6 +1133,7 @@
         document.getElementById('notes-drawer').classList.add('active');
         renderCompanyOverview();
         renderSampleBox(selectedSampleBox);
+        renderContactInfo(selectedCompany);
         document.getElementById('notes-list').innerHTML = '<p class="text-sm text-zinc-500 py-3">Loading notes…</p>';
         document.getElementById('buying-intelligence').innerHTML = '<p class="text-sm text-zinc-500 py-3">Loading buying intelligence…</p>';
 
@@ -1234,6 +1274,41 @@
         document.getElementById('mark-sample-received').classList.toggle('opacity-50', sampleBox.status !== 'sent');
         document.getElementById('mark-sample-received').classList.toggle('cursor-not-allowed', sampleBox.status !== 'sent');
         renderCompanyOverview();
+    }
+
+    function renderContactInfo(company) {
+        const el = document.getElementById('contact-info');
+        if (!el) return;
+        const info = company?.contactInfo;
+        if (!info) {
+            el.innerHTML = '<p class="text-sm text-zinc-500 py-1">Contact details are still loading. Reload the page if they do not appear.</p>';
+            return;
+        }
+        const contacts = info.contacts || [];
+        const telHref = (phone) => `tel:${String(phone).replace(/[^\d+]/g, '')}`;
+        const contactCards = contacts.map(ct => `
+            <div class="rounded-md border border-zinc-200 p-3 space-y-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <p class="text-sm font-medium text-zinc-900">${escapeHtml(ct.name || 'Unnamed contact')}</p>
+                    ${ct.isMain ? '<span class="text-[10px] font-semibold uppercase tracking-wide bg-emerald-50 text-emerald-700 rounded px-1.5 py-0.5">Main contact</span>' : ''}
+                </div>
+                ${ct.title ? `<p class="text-xs text-zinc-500">${escapeHtml(ct.title)}</p>` : ''}
+                ${ct.email ? `<p class="text-sm"><a class="text-[#008060] hover:underline break-all" href="mailto:${escapeHtml(ct.email)}">${escapeHtml(ct.email)}</a></p>` : '<p class="text-sm text-zinc-400">No email</p>'}
+                ${ct.phone ? `<p class="text-sm"><a class="text-[#008060] hover:underline" href="${escapeHtml(telHref(ct.phone))}">${escapeHtml(ct.phone)}</a></p>` : '<p class="text-sm text-zinc-400">No phone</p>'}
+            </div>`).join('');
+        const address = info.address
+            ? `<div><p class="text-xs text-zinc-500 mb-1">Shipping address</p><p class="text-sm text-zinc-800">${info.address.lines.map(escapeHtml).join('<br>')}</p></div>`
+            : '';
+        const locationPhone = info.locationPhone
+            ? `<div><p class="text-xs text-zinc-500 mb-1">Business phone</p><p class="text-sm"><a class="text-[#008060] hover:underline" href="${escapeHtml(telHref(info.locationPhone))}">${escapeHtml(info.locationPhone)}</a></p></div>`
+            : '';
+        el.innerHTML = `
+            <div class="space-y-3">
+                ${contactCards || '<p class="text-sm text-zinc-500">No contacts are linked to this company in Shopify.</p>'}
+                ${address}
+                ${locationPhone}
+                <p class="text-xs text-zinc-400">Read-only. Update contacts in Shopify under Customers or Companies.</p>
+            </div>`;
     }
 
     function renderBuyingIntelligence(intelligence) {
