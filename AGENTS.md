@@ -30,6 +30,9 @@
   - `GET /api/companies/:companyId/notes` — fetch notes
   - `POST /api/companies/:companyId/notes` — add note (body `{ body, author }`)
   - `DELETE /api/companies/:companyId/notes/:noteId` — delete note
+- **Customers search** matches company name, contact name/title, contact email, and phone (digits-only, so formatting is ignored); every typed word must match somewhere. The haystack is built client-side from `company.contactInfo` (see `companyContactInfo()` in `api/index.js`: `contacts[]`, `address`, `locationPhone`, headline `email`/`phone`), which `/api/companies` (full mode) now returns. Older `sessionStorage` cache entries lack `contactInfo` until the background refresh lands.
+- **Contact information** accordion (read-only) sits under Buying intelligence in the company drawer: each contact with a Main tag, mailto/tel links, plus the primary location's shipping address and business phone. Editing contacts stays in Shopify.
+- **Company-load progress** (`/api/companies` NDJSON): the server reads `companiesCount` first and reports `done` = companies loaded, `total` = real count, so the pill shows "Loading companies · 150 of 579 (429 left)". If the count is unavailable, `total` is 0 and the UI shows an indeterminate bar with "Loaded N companies" — never a guessed total. (The old `total = page + 1` logic made it read "1 left" the whole way.)
 - **Filters**: All Companies, Last 30 Days, 31–89 Days, 90+ Days, Never Ordered, New Partners, and Sample sent · needs follow-up. Map tab stays as second tab.
 - **Permissions needed**: `read_companies`, `write_companies`, `read_orders` for fetching companies and order data; metafield updates need `write_companies`.
 
