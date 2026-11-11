@@ -11,7 +11,8 @@
     "neon": "neonctl",
     "neon:auth": "neonctl auth",
     "neon:projects": "neonctl projects list",
-    "neon:connection-string": "neonctl connection-string"
+    "neon:connection-string": "neonctl connection-string",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@shopify/shopify-api": "^11.14.1",

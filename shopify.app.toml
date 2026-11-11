@@ -5,6 +5,10 @@ name = "Wholesale CRM"
 application_url = "https://shopify-staff-assignment-app-pi.vercel.app"
 embedded = true
 
+# Sidekick reads Wholesale CRM data through extensions/wholesale-crm-tools.
+[sidekick]
+extensions_summary = "Wholesale CRM for Country Life's B2B accounts: assigned sales reps, CRM notes, sample boxes, last-order follow-ups and account buying history."
+
 [webhooks]
 api_version = "2026-01"
 
@@ -15,6 +19,9 @@ uri = "/webhooks"
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "read_companies,read_customers,read_orders,read_all_orders,write_companies,write_customers,read_metaobjects,write_metaobjects"
+# Shopify-managed install (required for Sidekick). The Sidekick endpoints use
+# token exchange; the embedded UI's /auth routes stay as a fallback.
+use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [

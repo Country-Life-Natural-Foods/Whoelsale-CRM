@@ -389,6 +389,7 @@
             </button>
         </div>
         <div class="flex-1 overflow-y-auto">
+        <div id="sidekick-draft-banner" class="hidden m-4 mb-0 p-3 rounded-lg border border-violet-200 bg-violet-50 text-sm text-violet-900"></div>
             <section class="p-4 border-b border-zinc-200">
                 <h4 class="font-semibold text-sm mb-3">Overview</h4>
                 <div id="company-overview" class="space-y-3"></div>
@@ -1368,6 +1369,7 @@
                 }
             }
             showToast(`Sample marked ${status}`, 'success');
+            hideSidekickBanner();
         } catch (e) {
             showError('Failed to update sample box: ' + e.message);
         }
@@ -1391,6 +1393,7 @@
     }
 
     function closeNotes() {
+        hideSidekickBanner();
         document.getElementById('notes-drawer').classList.remove('active');
         selectedCompanyId = null;
         selectedCompany = null;
@@ -1428,11 +1431,12 @@
             const res = await window.shopifyApiFetch(companyApiUrl(selectedCompanyId, '/notes'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ body, author: 'Sales Team' })
+                body: JSON.stringify({ body })
             });
             if (!res.ok) throw new Error(await readApiError(res, 'Failed to save note'));
 
             showToast('Note saved', 'success');
+            hideSidekickBanner();
             document.getElementById('note-input').value = '';
 
             // Reload notes
@@ -2235,6 +2239,113 @@
     });
 
     let started = false;
+
+    // ---- Sidekick drafts ----
+    // Sidekick's prepare_account_update tool links here as
+    // app://crm?company=<id>&action=<add_note|sample_sent|sample_received|assign_to_me>&note=…
+    // We open that account and pre-fill the change. Nothing saves until the
+    // user clicks the normal Save / Mark sent / Assign button.
+    const SIDEKICK_PARAMS = ['company', 'action', 'note', 'sampleNote', 'followUp'];
+
+    function readSidekickDraft() {
+        const params = new URLSearchParams(window.location.search);
+        const raw = (params.get('company') || '').replace(/\D/g, '');
+        if (!raw) return null;
+        return {
+            companyId: `gid://shopify/Company/${raw}`,
+            action: params.get('action') || '',
+            note: (params.get('note') || '').slice(0, 500),
+            sampleNote: (params.get('sampleNote') || '').slice(0, 500),
+            followUp: /^\d{4}-\d{2}-\d{2}$/.test(params.get('followUp') || '') ? params.get('followUp') : '',
+        };
+    }
+
+    // Drop the draft from the address so a reload doesn't fill it in again.
+    function clearSidekickParams() {
+        try {
+            const url = new URL(window.location.href);
+            SIDEKICK_PARAMS.forEach(key => url.searchParams.delete(key));
+            window.history.replaceState(window.history.state, '', url.toString());
+        } catch (e) {
+            console.warn('Could not clear Sidekick params', e);
+        }
+    }
+
+    function showSidekickBanner(html) {
+        const banner = document.getElementById('sidekick-draft-banner');
+        banner.innerHTML = `<p class="font-medium flex items-center gap-1"><span class="material-symbols-outlined text-base">auto_awesome</span>Drafted by Sidekick</p><div class="mt-1">${html}</div>`;
+        banner.classList.remove('hidden');
+    }
+
+    function hideSidekickBanner() {
+        const banner = document.getElementById('sidekick-draft-banner');
+        if (banner) {
+            banner.classList.add('hidden');
+            banner.innerHTML = '';
+        }
+    }
+
+    async function assignSidekickDraftToMe(companyId) {
+        const myStaffId = staffList[0]?.id || null;
+        if (!myStaffId) {
+            showError('Link your account first (Link My Account) or ask a manager to add you as staff.');
+            return;
+        }
+        await assignRep(companyId, myStaffId);
+        hideSidekickBanner();
+        const company = companies.find(c => c.id === companyId);
+        if (company) renderCompanyOverview();
+    }
+
+    function applySidekickDraft() {
+        const draft = readSidekickDraft();
+        if (!draft) return;
+        clearSidekickParams();
+        const company = companies.find(c => c.id === draft.companyId);
+        if (!company) {
+            showError('Sidekick linked to an account that is not in the list. Search for it in Customers.');
+            return;
+        }
+        openNotes(company.id, company.name);
+
+        const openSection = (id) => {
+            const section = document.getElementById(id);
+            if (section) {
+                section.open = true;
+                section.scrollIntoView({ block: 'nearest' });
+            }
+        };
+
+        if (draft.action === 'add_note' && draft.note) {
+            document.getElementById('note-input').value = draft.note;
+            openSection('notes-section');
+            document.getElementById('note-input').focus();
+            showSidekickBanner('Review the note below, edit it if needed, then click <strong>Save Note</strong>.');
+        } else if (draft.action === 'sample_sent') {
+            if (draft.sampleNote) document.getElementById('sample-box-note').value = draft.sampleNote;
+            if (draft.followUp) document.getElementById('sample-box-follow-up').value = draft.followUp;
+            openSection('sample-box-section');
+            showSidekickBanner('Check the sample box details below, then click <strong>Mark sent</strong>.');
+        } else if (draft.action === 'sample_received') {
+            openSection('sample-box-section');
+            showSidekickBanner('Click <strong>Mark received</strong> below to confirm the sample arrived.');
+        } else if (draft.action === 'assign_to_me') {
+            const myStaffId = staffList[0]?.id || null;
+            if (isManagerGlobal) {
+                showSidekickBanner('Pick yourself in the <strong>Rep</strong> dropdown on this account\'s row to assign it.');
+            } else if (!myStaffId) {
+                showSidekickBanner('Link your account (Link My Account) before you can assign accounts to yourself.');
+            } else if (company.assignedStaff?.staffId === myStaffId) {
+                showSidekickBanner(`${escapeHtml(company.name)} is already assigned to you.`);
+            } else if (company.assignedStaff?.staffId) {
+                showSidekickBanner(`${escapeHtml(company.name)} is assigned to ${escapeHtml(company.assignedStaff.name || 'another rep')}. Ask a manager to reassign it.`);
+            } else {
+                showSidekickBanner(`Assign ${escapeHtml(company.name)} to yourself?
+                    <button onclick="assignSidekickDraftToMe('${company.id}')" class="mt-2 block bg-[#008060] text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-[#00654b]">Assign to me</button>`);
+            }
+        }
+    }
+
     async function init() {
         if (started) return;
         started = true;
@@ -2255,6 +2366,7 @@
 
             await Promise.all([roleP, staffP, locationsP]);
             updateClaimStaffVisibility();
+            applySidekickDraft();
             if (!painted) window.pageProgress.finish();
         } catch (e) {
             if (!painted) window.pageProgress.fail();

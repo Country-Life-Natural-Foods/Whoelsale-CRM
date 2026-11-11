@@ -43,6 +43,7 @@ const { configureSessionStorage } = require('../lib/configure-session-storage');
 const { configureStaffStore } = require('../lib/staff-store');
 const { configureCompanyMetrics } = require('../lib/company-metrics');
 const { shopifyGraphql, uniqueErrorMessages } = require('../lib/shopify-gql');
+const { createSidekickRouter } = require('../lib/sidekick');
 
 applyShopifyDeploymentEnv();
 
@@ -456,6 +457,14 @@ app.get(
   shopifyCspHeaders,
   sendAppPage(process.env.APP_HOME_HTML || 'index.html'),
 );
+// Sidekick links open `app://crm?company=…` (see lib/sidekick.js). Same page as
+// `/`; public/index.html reads the query and opens that account with any draft.
+app.get(
+  '/crm',
+  ensureInstalledOnShop,
+  shopifyCspHeaders,
+  sendAppPage(process.env.APP_HOME_HTML || 'index.html'),
+);
 app.get('/reports', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('reports.html'));
 app.get('/analytics', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('analytics.html'));
 
@@ -566,6 +575,22 @@ const isManager = async (user) => {
   if (!user?.shopifyUserId) return false;
   const staffRecord = await staffStore.findByShopifyUserId(user.shopifyUserId);
   return staffRecord?.role === 'manager';
+};
+
+// CRM writes (notes, sample boxes) need a claimed staff record (Isaac,
+// 2026-11-11), so every note has a real author and only the team can write.
+// Sends the 403 itself and returns null when the caller has no record.
+const requireStaffWriter = async (req, res) => {
+  const user = await getCurrentUser(req, res);
+  const staff = user?.shopifyUserId ? await staffStore.findByShopifyUserId(user.shopifyUserId) : null;
+  if (!staff) {
+    res.status(403).json({
+      error: 'Only Wholesale CRM staff can save notes. Use "Link My Account" or ask a manager to add you as staff.',
+      code: 'STAFF_REQUIRED',
+    });
+    return null;
+  }
+  return staff;
 };
 
 // Commissions show real pay figures, so viewing them needs a rep's own
@@ -972,6 +997,41 @@ const fetchAllCompanies = async (client, options = {}) => {
   return pending;
 };
 
+// Sidekick needs answers in under a second, so it never waits on the ~15s
+// Shopify company walk. It reads the in-memory list or the Postgres snapshot
+// (refreshing a stale one in the background) and returns null when neither
+// exists yet, after starting a background fetch for next time.
+async function getCompanyListForSidekick(client, shop) {
+  if (!client || !shop) return null;
+  const cached = commissionCache.get(shop, COMPANIES_COMMISSIONS_KEY);
+  if (cached) return cached;
+  let snapshot = null;
+  if (companyMetrics.enabled) {
+    try {
+      snapshot = await companyMetrics.getCompanySnapshot(shop);
+    } catch (err) {
+      console.error('[sidekick] reading company snapshot failed', err);
+    }
+  }
+  const ageMs = snapshot ? Date.now() - snapshot.updatedAt.getTime() : Infinity;
+  if (!snapshot || ageMs >= COMPANIES_SNAPSHOT_FRESH_MS) {
+    if (!companiesCommissionsInflight.has(shop)) {
+      // Commissions requests may await this same promise, so it must keep
+      // its real result/rejection; logging and cleanup hang off side chains.
+      const pending = refreshCommissionCompanies(client, shop, { mode: 'commissions' });
+      companiesCommissionsInflight.set(shop, pending);
+      pending
+        .catch((err) => console.error('[sidekick] background company refresh failed', err))
+        .finally(() => companiesCommissionsInflight.delete(shop));
+    }
+  }
+  if (snapshot && ageMs < COMPANIES_SNAPSHOT_MAX_MS) {
+    commissionCache.set(shop, COMPANIES_COMMISSIONS_KEY, snapshot.companies);
+    return snapshot.companies;
+  }
+  return null;
+}
+
 const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress } = {}) => {
   if (!client) return [];
   const query = mode === 'commissions'
@@ -1017,6 +1077,9 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
             assignedStaffMetafield: metafield(namespace: "clnf", key: "assigned_staff") {
               value
               updatedAt
+            }
+            sampleBoxMetafield: metafield(namespace: "clnf", key: "sample_box") {
+              value
             }
           }
         }
@@ -1245,12 +1308,22 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
           console.warn('Failed to parse assigned staff for company', company.id, e.message);
         }
         const contact = companyContactDetails(company);
+        // Sample-box status rides along so Sidekick can list sample follow-ups
+        // from the snapshot without paging Shopify.
+        let sampleBox = { status: 'none' };
+        try {
+          const parsed = company.sampleBoxMetafield?.value ? JSON.parse(company.sampleBoxMetafield.value) : null;
+          if (parsed && ['none', 'sent', 'received'].includes(parsed.status)) sampleBox = parsed;
+        } catch (e) {
+          console.warn('Failed to parse sample box for company', company.id, e.message);
+        }
         return {
           id: company.id,
           name: company.name,
           assignedStaff,
           email: contact.email,
           phone: contact.phone,
+          sampleBox,
         };
       }));
     } else {
@@ -1493,11 +1566,19 @@ app.post('/api/companies/:companyId/notes', validateAuthenticatedSession, async 
     const client = await getGraphqlClient(req, res);
     if (!client) return res.status(401).json({ error: 'Unauthorized' });
 
-    const companyId = decodeRouteParam(req.params.companyId);
-    const { body, author } = req.body;
+    const staff = await requireStaffWriter(req, res);
+    if (!staff) return;
 
-    if (!body || !author) {
-      return res.status(400).json({ error: 'body and author required' });
+    const companyId = decodeRouteParam(req.params.companyId);
+    const body = String(req.body?.body || '').trim();
+    // Author comes from the staff record, not the request.
+    const author = staff.name || staff.email || 'Sales Team';
+
+    if (!body) {
+      return res.status(400).json({ error: 'body required' });
+    }
+    if (body.length > 2000) {
+      return res.status(400).json({ error: 'note must be 2000 characters or fewer' });
     }
 
     // Fetch existing notes
@@ -1552,6 +1633,8 @@ app.delete('/api/companies/:companyId/notes/:noteId', validateAuthenticatedSessi
   try {
     const client = await getGraphqlClient(req, res);
     if (!client) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (!(await requireStaffWriter(req, res))) return;
 
     const companyId = decodeRouteParam(req.params.companyId);
     const noteId = decodeRouteParam(req.params.noteId);
@@ -1648,6 +1731,8 @@ app.put('/api/companies/:companyId/sample-box', validateAuthenticatedSession, as
   try {
     const client = await getGraphqlClient(req, res);
     if (!client) return res.status(401).json({ error: 'Unauthorized' });
+    const staff = await requireStaffWriter(req, res);
+    if (!staff) return;
     const companyId = decodeRouteParam(req.params.companyId);
     const status = String(req.body?.status || '');
     if (!['none', 'sent', 'received'].includes(status)) {
@@ -1679,7 +1764,8 @@ app.put('/api/companies/:companyId/sample-box', validateAuthenticatedSession, as
 
     const current = parseSampleBox(data.company.sampleBox?.value);
     const note = String(req.body?.note ?? req.body?.contents ?? '').trim();
-    const sentBy = String(req.body?.sentBy || '').trim();
+    // Who sent it (and the auto-note author) comes from the staff record.
+    const sentBy = String(staff.name || staff.email || req.body?.sentBy || '').trim();
     if (note.length > 500) {
       return res.status(400).json({ error: 'note must be 500 characters or fewer' });
     }
@@ -1862,6 +1948,19 @@ app.get('/api/companies/:companyId/intelligence', validateAuthenticatedSession, 
     res.status(500).json({ error: error.message });
   }
 });
+
+// SIDEKICK ENDPOINTS
+// Read-only data for the `wholesale-crm-tools` Sidekick extension. Auth is a
+// session token from Shopify's extension sandbox (token exchange when no
+// offline session is stored). See lib/sidekick.js and docs/SIDEKICK.md.
+app.use('/api/sidekick', createSidekickRouter({
+  shopify,
+  sessionStorage: shopifySessionStorage,
+  companyMetrics,
+  staffStore,
+  getCompanyList: getCompanyListForSidekick,
+  intelligenceRanges: () => companyIntelligenceRanges(),
+}));
 
 // STAFF MANAGEMENT ENDPOINTS
 
