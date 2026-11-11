@@ -23,7 +23,12 @@ test('orderStatus matches the Customers tab badge buckets', () => {
 
 test('companyAdminUri and numericId handle GIDs and bare ids', () => {
   assert.equal(sidekick.numericId('gid://shopify/Company/42'), '42');
-  assert.equal(sidekick.companyAdminUri('gid://shopify/Company/42'), 'shopify://admin/companies/42');
+  assert.equal(sidekick.companyAdminUri('gid://shopify/Company/42'), 'shopify:admin/companies/42');
+  assert.equal(sidekick.crmAppUrl('gid://shopify/Company/42'), 'app://crm?company=42');
+  assert.equal(
+    sidekick.crmAppUrl('gid://shopify/Company/42', { action: 'add_note', note: 'Hi & bye', followUp: '' }),
+    'app://crm?company=42&action=add_note&note=Hi+%26+bye',
+  );
   assert.equal(sidekick.companyAdminUri(null), null);
 });
 
@@ -261,7 +266,7 @@ test('search_accounts filters by query, rep "me" and status', async () => {
     const byName = await get('/api/sidekick/accounts?query=quiet');
     assert.deepEqual(byName.body.accounts.map((a) => a.name), ['Quiet Co']);
     assert.equal(byName.body.accounts[0].status, 'dormant');
-    assert.equal(byName.body.results[0].type, 'resource_link');
+    assert.equal(byName.body.results[0].url, 'app://crm?company=2');
 
     const mine = await get('/api/sidekick/accounts?rep=me');
     assert.deepEqual(mine.body.accounts.map((a) => a.name).sort(), ['Active Co', 'Quiet Co']);
@@ -396,4 +401,75 @@ test('analytics tools say backfilling until the rollup is complete', async () =>
       assert.equal((await get(`/api/sidekick/analytics/${path}`)).body.status, 'backfilling');
     }
   });
+});
+
+const ACME = { id: 'gid://shopify/Company/7', name: 'Acme Foods' };
+const JESS = { id: 's1', name: 'Jessica', role: 'rep' };
+
+test('buildDraft: validates input and never claims a save', () => {
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'delete_everything', staff: JESS }).error);
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'add_note', note: '', staff: JESS }).error);
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'x'.repeat(501), staff: JESS }).error);
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'sample_sent', followUpDate: 'soon', staff: JESS }).error);
+
+  const note = sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'Called Sarah, wants spring catalog', staff: JESS });
+  assert.equal(note.status, 'draft_ready');
+  assert.equal(note.savedYet, false);
+  assert.match(note.message, /Nothing is saved yet/);
+  assert.equal(note.results[0].url, 'app://crm?company=7&action=add_note&note=Called+Sarah%2C+wants+spring+catalog');
+
+  const sample = sidekick.buildDraft({ company: ACME, action: 'sample_sent', note: 'Vitamin C trio', followUpDate: '2026-12-01', staff: JESS });
+  assert.equal(sample.results[0].url, 'app://crm?company=7&action=sample_sent&sampleNote=Vitamin+C+trio&followUp=2026-12-01');
+});
+
+test('buildDraft: staff record required; assign_to_me respects existing reps', () => {
+  assert.equal(sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'hi', staff: null }).status, 'staff_required');
+  assert.equal(sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS }).status, 'draft_ready');
+  assert.equal(
+    sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS, assignedStaff: { staffId: 's1', name: 'Jessica' } }).status,
+    'already_yours',
+  );
+  const taken = sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS, assignedStaff: { staffId: 's2', name: 'Michael' } });
+  assert.equal(taken.status, 'assigned_to_someone_else');
+  assert.equal(taken.results, undefined, 'no link when the rep cannot take it');
+  const manager = sidekick.buildDraft({
+    company: ACME, action: 'assign_to_me', staff: { id: 's9', name: 'Isaac', role: 'manager' }, assignedStaff: { staffId: 's2', name: 'Michael' },
+  });
+  assert.equal(manager.status, 'draft_ready');
+  assert.equal(manager.draft.replacesRep, 'Michael');
+});
+
+test('POST /drafts checks the account and the caller', async () => {
+  const { deps } = fakeDeps();
+  const app = express();
+  app.use(express.json());
+  app.use('/api/sidekick', sidekick.createSidekickRouter(deps));
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = async (body) => {
+    const res = await fetch(`${base}/api/sidekick/drafts`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+  try {
+    const ok = await post({ id: '2', action: 'add_note', note: 'Left a voicemail' });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.status, 'draft_ready');
+    assert.equal(ok.body.account.name, 'Quiet Co');
+
+    const mine = await post({ id: '2', action: 'assign_to_me' });
+    assert.equal(mine.body.status, 'already_yours');
+
+    assert.equal((await post({ id: '999', action: 'add_note', note: 'x' })).status, 404);
+    assert.equal((await post({ id: '2', action: 'bogus' })).status, 400);
+
+    deps.staffStore.findByShopifyUserId = async () => null;
+    assert.equal((await post({ id: '2', action: 'add_note', note: 'x' })).body.status, 'staff_required');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

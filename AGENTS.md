@@ -55,8 +55,10 @@
 
 ## Sidekick extension
 
-- `extensions/wholesale-crm-tools` (`admin.app.tools.data`) gives Shopify Sidekick 9 read-only tools: `search_accounts`, `get_account`, `get_account_notes`, `accounts_needing_follow_up`, `account_buying_intel`, plus Analytics-page equivalents `wholesale_summary`, `revenue_trend`, `top_accounts`, `top_products` (rollup only, default YTD). Backend routes are `/api/sidekick/*` in `lib/sidekick.js`, mounted in `api/index.js`. Full detail: `docs/SIDEKICK.md`.
+- `extensions/wholesale-crm-tools` (`admin.app.tools.data`) gives Shopify Sidekick 10 tools (all read-only): `search_accounts`, `get_account`, `get_account_notes`, `accounts_needing_follow_up`, `account_buying_intel`, plus Analytics-page equivalents `wholesale_summary`, `revenue_trend`, `top_accounts`, `top_products` (rollup only, default YTD). Backend routes are `/api/sidekick/*` in `lib/sidekick.js`, mounted in `api/index.js`. Full detail: `docs/SIDEKICK.md`.
 - Auth: session token from the extension sandbox → stored offline session, else token exchange. `shopify.app.toml` sets `use_legacy_install_flow = false` and `[sidekick] extensions_summary`.
 - Sidekick wants answers under 1s and under ~4k tokens: lists read the Postgres company snapshot (now also stores `sampleBox`) plus a 5-min cached lifetime rollup, never page Shopify, and cap at 25 rows.
-- Decisions (Isaac, 2026-11-11): never expose commission amounts, tiers, or revenue per rep (no rep_book tool; no rep field on revenue rankings); everyone with app access sees all accounts; write actions (Phase 2 intent links) not built yet.
+- Decisions (Isaac, 2026-11-11): never expose commission amounts, tiers, or revenue per rep (no rep_book tool; no rep field on revenue rankings); everyone with app access sees all accounts.
+- Writes from Sidekick are "draft, then confirm": `prepare_account_update` returns `app://crm?company=…&action=add_note|sample_sent|sample_received|assign_to_me…`; `/crm` serves the app home and `applySidekickDraft()` in `public/index.html` pre-fills the drawer. The user clicks Save. Shopify's intent types have no CRM/note type, and data tools must stay retrieval-only.
+- Saving or deleting notes and updating sample boxes require a claimed staff record (`requireStaffWriter`); author / sent-by come from the staff record.
 - Releasing the extension needs `shopify app deploy` (CLI 3.90+) from the org that owns the app.

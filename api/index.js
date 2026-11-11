@@ -457,6 +457,14 @@ app.get(
   shopifyCspHeaders,
   sendAppPage(process.env.APP_HOME_HTML || 'index.html'),
 );
+// Sidekick links open `app://crm?company=…` (see lib/sidekick.js). Same page as
+// `/`; public/index.html reads the query and opens that account with any draft.
+app.get(
+  '/crm',
+  ensureInstalledOnShop,
+  shopifyCspHeaders,
+  sendAppPage(process.env.APP_HOME_HTML || 'index.html'),
+);
 app.get('/reports', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('reports.html'));
 app.get('/analytics', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('analytics.html'));
 
@@ -567,6 +575,22 @@ const isManager = async (user) => {
   if (!user?.shopifyUserId) return false;
   const staffRecord = await staffStore.findByShopifyUserId(user.shopifyUserId);
   return staffRecord?.role === 'manager';
+};
+
+// CRM writes (notes, sample boxes) need a claimed staff record (Isaac,
+// 2026-11-11), so every note has a real author and only the team can write.
+// Sends the 403 itself and returns null when the caller has no record.
+const requireStaffWriter = async (req, res) => {
+  const user = await getCurrentUser(req, res);
+  const staff = user?.shopifyUserId ? await staffStore.findByShopifyUserId(user.shopifyUserId) : null;
+  if (!staff) {
+    res.status(403).json({
+      error: 'Only Wholesale CRM staff can save notes. Use "Link My Account" or ask a manager to add you as staff.',
+      code: 'STAFF_REQUIRED',
+    });
+    return null;
+  }
+  return staff;
 };
 
 // Commissions show real pay figures, so viewing them needs a rep's own
@@ -1542,11 +1566,19 @@ app.post('/api/companies/:companyId/notes', validateAuthenticatedSession, async 
     const client = await getGraphqlClient(req, res);
     if (!client) return res.status(401).json({ error: 'Unauthorized' });
 
-    const companyId = decodeRouteParam(req.params.companyId);
-    const { body, author } = req.body;
+    const staff = await requireStaffWriter(req, res);
+    if (!staff) return;
 
-    if (!body || !author) {
-      return res.status(400).json({ error: 'body and author required' });
+    const companyId = decodeRouteParam(req.params.companyId);
+    const body = String(req.body?.body || '').trim();
+    // Author comes from the staff record, not the request.
+    const author = staff.name || staff.email || 'Sales Team';
+
+    if (!body) {
+      return res.status(400).json({ error: 'body required' });
+    }
+    if (body.length > 2000) {
+      return res.status(400).json({ error: 'note must be 2000 characters or fewer' });
     }
 
     // Fetch existing notes
@@ -1601,6 +1633,8 @@ app.delete('/api/companies/:companyId/notes/:noteId', validateAuthenticatedSessi
   try {
     const client = await getGraphqlClient(req, res);
     if (!client) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (!(await requireStaffWriter(req, res))) return;
 
     const companyId = decodeRouteParam(req.params.companyId);
     const noteId = decodeRouteParam(req.params.noteId);
@@ -1697,6 +1731,8 @@ app.put('/api/companies/:companyId/sample-box', validateAuthenticatedSession, as
   try {
     const client = await getGraphqlClient(req, res);
     if (!client) return res.status(401).json({ error: 'Unauthorized' });
+    const staff = await requireStaffWriter(req, res);
+    if (!staff) return;
     const companyId = decodeRouteParam(req.params.companyId);
     const status = String(req.body?.status || '');
     if (!['none', 'sent', 'received'].includes(status)) {
@@ -1728,7 +1764,8 @@ app.put('/api/companies/:companyId/sample-box', validateAuthenticatedSession, as
 
     const current = parseSampleBox(data.company.sampleBox?.value);
     const note = String(req.body?.note ?? req.body?.contents ?? '').trim();
-    const sentBy = String(req.body?.sentBy || '').trim();
+    // Who sent it (and the auto-note author) comes from the staff record.
+    const sentBy = String(staff.name || staff.email || req.body?.sentBy || '').trim();
     if (note.length > 500) {
       return res.status(400).json({ error: 'note must be 500 characters or fewer' });
     }

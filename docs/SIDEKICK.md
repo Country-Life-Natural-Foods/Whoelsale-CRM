@@ -1,8 +1,9 @@
 # Sidekick extension (Wholesale CRM data)
 
 Sidekick, Shopify's admin assistant, can read Wholesale CRM data through the
-`wholesale-crm-tools` extension. It is read-only. Sidekick links each answer to
-the company page in Shopify admin.
+`wholesale-crm-tools` extension, and can prepare changes (notes, sample boxes,
+self-assignment) that the user confirms in the app. Sidekick never saves
+anything itself. Account results link into the app (`app://crm?company=…`).
 
 ## Tools
 
@@ -13,6 +14,7 @@ the company page in Shopify admin.
 | `get_account_notes` | `GET /api/sidekick/accounts/:id/notes?limit` | Note history, newest first |
 | `accounts_needing_follow_up` | `GET /api/sidekick/follow-ups?kind&rep&limit` | `dormant`, `at_risk`, `sample_follow_up`, `new_partner` |
 | `account_buying_intel` | `GET /api/sidekick/accounts/:id/buying` | Revenue this year vs. same dates last year, top products |
+| `prepare_account_update` | `POST /api/sidekick/drafts` `{id, action, note, followUpDate}` | Builds a link that opens the account with a draft: `add_note`, `sample_sent`, `sample_received`, `assign_to_me`. Saves nothing |
 | `wholesale_summary` | `GET /api/sidekick/analytics/summary?startDate&endDate` | Analytics page KPIs: revenue, orders, average order value, accounts that ordered, same dates last year, top product |
 | `revenue_trend` | `GET /api/sidekick/analytics/trend?startDate&endDate&period` | Revenue and orders by day, week or month (max 60 points, newest kept) |
 | `top_accounts` | `GET /api/sidekick/analytics/accounts?startDate&endDate&sortBy&limit` | Accounts ranked by revenue or orders for the range |
@@ -29,6 +31,29 @@ rep (both live in the PIN-protected Commissions and Reports pages). A rep shows
 up only as the assigned rep on an account and as a filter on account lists
 (`rep=me` works). Revenue rankings (`top_accounts`) carry no rep field.
 Every staff member with app access sees all accounts, same as the app.
+
+## Drafts: Sidekick prepares, the rep saves
+
+Shopify only lets the read tools fetch data. Its built-in action types have
+no CRM or note type (an unknown type is rejected at deploy). So writes work
+like this:
+
+1. Rep: "Log a note on Green Valley: called Sarah, wants the spring catalog."
+2. `prepare_account_update` checks the account and the rep's staff record,
+   then returns `app://crm?company=…&action=add_note&note=…`.
+3. The link opens `/crm` (same page as `/`). `public/index.html`
+   (`applySidekickDraft`) opens the account, fills the field, shows a
+   "Drafted by Sidekick" banner and removes the draft from the URL.
+4. The rep clicks Save Note / Mark sent / Mark received / Assign to me. That
+   uses the normal endpoints and permission checks.
+
+`assign_to_me` follows the app's rules: a rep can claim an unassigned account
+but not one that has another rep (managers can reassign).
+
+**Who can write:** saving or deleting notes and updating sample boxes needs a
+claimed staff record (`requireStaffWriter` in `api/index.js`), in the app and
+from Sidekick alike. The note author and sample "sent by" come from that
+record, not from the request.
 
 ## How it works
 
