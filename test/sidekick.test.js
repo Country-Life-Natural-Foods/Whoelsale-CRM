@@ -298,8 +298,14 @@ test('get_account returns rep, cadence, sample box, notes and no commission data
     assert.equal(res.body.typicalDaysBetweenOrders, 30);
     assert.equal(res.body.sampleBox.status, 'received');
     assert.equal(res.body.latestNotes[0].body, 'Called, wants spring catalog');
-    assert.equal(res.body.contacts[0].email, 'pat@quiet.co');
+    assert.equal(res.body.contactCount, 1);
+    assert.ok(!JSON.stringify(res.body).includes('pat@quiet.co'), 'no contact details unless asked');
     assert.ok(!JSON.stringify(res.body).toLowerCase().includes('commission'));
+
+    const contacts = await get('/api/sidekick/accounts/2/contacts');
+    assert.equal(contacts.body.contacts[0].email, 'pat@quiet.co');
+    assert.equal(contacts.body.contacts[0].main, true);
+    assert.equal(contacts.body.businessPhone, '+15550000000');
 
     assert.equal((await get('/api/sidekick/accounts/999')).status, 404);
   });
@@ -403,73 +409,30 @@ test('analytics tools say backfilling until the rollup is complete', async () =>
   });
 });
 
-const ACME = { id: 'gid://shopify/Company/7', name: 'Acme Foods' };
-const JESS = { id: 's1', name: 'Jessica', role: 'rep' };
 
-test('buildDraft: validates input and never claims a save', () => {
-  assert.ok(sidekick.buildDraft({ company: ACME, action: 'delete_everything', staff: JESS }).error);
-  assert.ok(sidekick.buildDraft({ company: ACME, action: 'add_note', note: '', staff: JESS }).error);
-  assert.ok(sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'x'.repeat(501), staff: JESS }).error);
-  assert.ok(sidekick.buildDraft({ company: ACME, action: 'sample_sent', followUpDate: 'soon', staff: JESS }).error);
+test('the Sidekick extension stays read-only and its text does not steer Sidekick', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const dir = path.join(__dirname, '..', 'extensions', 'wholesale-crm-tools');
+  const tools = JSON.parse(fs.readFileSync(path.join(dir, 'tools.json'), 'utf8'));
+  const instructions = fs.readFileSync(path.join(dir, 'instructions.md'), 'utf8');
+  const toml = fs.readFileSync(path.join(dir, 'shopify.extension.toml'), 'utf8');
+  const source = fs.readFileSync(path.join(dir, 'src', 'index.js'), 'utf8');
 
-  const note = sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'Called Sarah, wants spring catalog', staff: JESS });
-  assert.equal(note.status, 'draft_ready');
-  assert.equal(note.savedYet, false);
-  assert.match(note.message, /Nothing is saved yet/);
-  assert.equal(note.results[0].url, 'app://crm?company=7&action=add_note&note=Called+Sarah%2C+wants+spring+catalog');
-
-  const sample = sidekick.buildDraft({ company: ACME, action: 'sample_sent', note: 'Vitamin C trio', followUpDate: '2026-12-01', staff: JESS });
-  assert.equal(sample.results[0].url, 'app://crm?company=7&action=sample_sent&sampleNote=Vitamin+C+trio&followUp=2026-12-01');
-});
-
-test('buildDraft: staff record required; assign_to_me respects existing reps', () => {
-  assert.equal(sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'hi', staff: null }).status, 'staff_required');
-  assert.equal(sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS }).status, 'draft_ready');
-  assert.equal(
-    sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS, assignedStaff: { staffId: 's1', name: 'Jessica' } }).status,
-    'already_yours',
-  );
-  const taken = sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS, assignedStaff: { staffId: 's2', name: 'Michael' } });
-  assert.equal(taken.status, 'assigned_to_someone_else');
-  assert.equal(taken.results, undefined, 'no link when the rep cannot take it');
-  const manager = sidekick.buildDraft({
-    company: ACME, action: 'assign_to_me', staff: { id: 's9', name: 'Isaac', role: 'manager' }, assignedStaff: { staffId: 's2', name: 'Michael' },
-  });
-  assert.equal(manager.status, 'draft_ready');
-  assert.equal(manager.draft.replacesRep, 'Michael');
-});
-
-test('POST /drafts checks the account and the caller', async () => {
-  const { deps } = fakeDeps();
-  const app = express();
-  app.use(express.json());
-  app.use('/api/sidekick', sidekick.createSidekickRouter(deps));
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, resolve));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const post = async (body) => {
-    const res = await fetch(`${base}/api/sidekick/drafts`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return { status: res.status, body: await res.json() };
-  };
-  try {
-    const ok = await post({ id: '2', action: 'add_note', note: 'Left a voicemail' });
-    assert.equal(ok.status, 200);
-    assert.equal(ok.body.status, 'draft_ready');
-    assert.equal(ok.body.account.name, 'Quiet Co');
-
-    const mine = await post({ id: '2', action: 'assign_to_me' });
-    assert.equal(mine.body.status, 'already_yours');
-
-    assert.equal((await post({ id: '999', action: 'add_note', note: 'x' })).status, 404);
-    assert.equal((await post({ id: '2', action: 'bogus' })).status, 400);
-
-    deps.staffStore.findByShopifyUserId = async () => null;
-    assert.equal((await post({ id: '2', action: 'add_note', note: 'x' })).body.status, 'staff_required');
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
+  assert.ok(tools.length <= 20);
+  for (const tool of tools) {
+    assert.ok(tool.name.length <= 64, tool.name);
+    assert.ok(tool.description.length <= 512, tool.name);
+  }
+  // Shopify's policy: data extensions fetch data only.
+  const allText = JSON.stringify(tools) + instructions + toml;
+  for (const word of ['prepare_', 'assign_to_me', 'add_note', 'mark a sample', 'save', 'update']) {
+    assert.ok(!allText.toLowerCase().includes(word), `mutation wording: ${word}`);
+  }
+  assert.ok(!/method:\s*'(POST|PUT|PATCH|DELETE)'/i.test(source), 'extension only sends GET requests');
+  // No behavioral overrides aimed at Sidekick.
+  for (const phrase of [/\bnever\b/i, /\bdo not\b/i, /\bdon't\b/i, /\bmust\b/i, /\balways\b/i, /\bignore\b/i, /\byou are\b/i]) {
+    assert.ok(!phrase.test(instructions), `instructions contain ${phrase}`);
+    assert.ok(!phrase.test(JSON.stringify(tools)), `tools.json contains ${phrase}`);
   }
 });
