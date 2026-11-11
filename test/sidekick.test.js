@@ -116,6 +116,81 @@ test('followUpRows: dormant, at_risk, new_partner, sample_follow_up', () => {
   assert.equal(mine.total, 0);
 });
 
+test('lastContact is the newest note, or null with no notes', () => {
+  const notes = sidekick.parseNotes(JSON.stringify([
+    { body: 'Intro call', author: 'Jessica', createdAt: '2026-06-01T15:00:00Z' },
+    { body: 'Called, wants spring catalog', author: 'Jessica', createdAt: '2026-10-02T15:00:00Z' },
+  ]));
+  assert.deepEqual(sidekick.lastContact(notes, NOW), {
+    date: '2026-10-02',
+    author: 'Jessica',
+    body: 'Called, wants spring catalog',
+    daysSince: 40,
+  });
+  assert.equal(sidekick.lastContact([], NOW), null);
+});
+
+test('openTasks derives sample, dormant and at-risk tasks, soonest due first', () => {
+  const all = sidekick.openTasks(COMPANIES, ROLLUPS, { now: NOW });
+  assert.equal(all.total, 4);
+  assert.deepEqual(all.tasks.map((t) => [t.accountName, t.kind]), [
+    ['Sample Late Co', 'sample_follow_up'],
+    ['Prospect Co', 'sample_follow_up'],
+    ['Quiet Co', 'dormant_follow_up'],
+    ['Middle Co', 'at_risk_follow_up'],
+  ]);
+  assert.equal(all.tasks[0].dueDate, '2026-11-06');
+  assert.equal(all.tasks[0].appUrl, 'app://crm?company=5');
+
+  const samples = sidekick.openTasks(COMPANIES, ROLLUPS, { kind: 'sample_follow_up', now: NOW });
+  assert.deepEqual(samples.tasks.map((t) => t.accountName), ['Sample Late Co', 'Prospect Co']);
+
+  const dormant = sidekick.openTasks(COMPANIES, ROLLUPS, { kind: 'dormant_follow_up', now: NOW });
+  assert.deepEqual(dormant.tasks.map((t) => t.accountName), ['Quiet Co']);
+
+  const atRisk = sidekick.openTasks(COMPANIES, ROLLUPS, { kind: 'at_risk_follow_up', now: NOW });
+  assert.deepEqual(atRisk.tasks.map((t) => t.accountName), ['Middle Co']);
+
+  const mine = sidekick.openTasks(COMPANIES, ROLLUPS, { kind: 'dormant_follow_up', rep: 'michael', now: NOW });
+  assert.equal(mine.total, 0);
+});
+
+const ACME = { id: 'gid://shopify/Company/7', name: 'Acme Foods' };
+const JESS = { id: 's1', name: 'Jessica', role: 'rep' };
+
+test('buildDraft: validates input and never claims a save', () => {
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'delete_everything', staff: JESS }).error);
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'add_note', note: '', staff: JESS }).error);
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'x'.repeat(501), staff: JESS }).error);
+  assert.ok(sidekick.buildDraft({ company: ACME, action: 'sample_sent', followUpDate: 'soon', staff: JESS }).error);
+
+  const note = sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'Called Sarah, wants spring catalog', staff: JESS });
+  assert.equal(note.status, 'draft_ready');
+  assert.equal(note.savedYet, false);
+  assert.match(note.message, /Nothing is saved yet/);
+  assert.equal(note.results[0].url, 'app://crm?company=7&action=add_note&note=Called+Sarah%2C+wants+spring+catalog');
+
+  const sample = sidekick.buildDraft({ company: ACME, action: 'sample_sent', note: 'Vitamin C trio', followUpDate: '2026-12-01', staff: JESS });
+  assert.equal(sample.results[0].url, 'app://crm?company=7&action=sample_sent&sampleNote=Vitamin+C+trio&followUp=2026-12-01');
+});
+
+test('buildDraft: staff record required; assign_to_me respects existing reps', () => {
+  assert.equal(sidekick.buildDraft({ company: ACME, action: 'add_note', note: 'hi', staff: null }).status, 'staff_required');
+  assert.equal(sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS }).status, 'draft_ready');
+  assert.equal(
+    sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS, assignedStaff: { staffId: 's1', name: 'Jessica' } }).status,
+    'already_yours',
+  );
+  const taken = sidekick.buildDraft({ company: ACME, action: 'assign_to_me', staff: JESS, assignedStaff: { staffId: 's2', name: 'Michael' } });
+  assert.equal(taken.status, 'assigned_to_someone_else');
+  assert.equal(taken.results, undefined, 'no link when the rep cannot take it');
+  const manager = sidekick.buildDraft({
+    company: ACME, action: 'assign_to_me', staff: { id: 's9', name: 'Isaac', role: 'manager' }, assignedStaff: { staffId: 's2', name: 'Michael' },
+  });
+  assert.equal(manager.status, 'draft_ready');
+  assert.equal(manager.draft.replacesRep, 'Michael');
+});
+
 // ---------------------------------------------------------------------------
 // Router, with fake Shopify / Neon / staff dependencies
 // ---------------------------------------------------------------------------
@@ -311,6 +386,62 @@ test('get_account returns rep, cadence, sample box, notes and no commission data
   });
 });
 
+test('list_open_tasks and get_last_contact; every tool answer links into the app', async () => {
+  const { deps } = fakeDeps();
+  await withServer(deps, async (get) => {
+    const tasks = await get('/api/sidekick/tasks');
+    assert.equal(tasks.body.total, 4);
+    assert.deepEqual(tasks.body.tasks.map((t) => t.accountName),
+      ['Sample Late Co', 'Prospect Co', 'Quiet Co', 'Middle Co']);
+    assert.equal(tasks.body.results[0].url, 'app://crm?company=5');
+
+    const dormantTasks = await get('/api/sidekick/tasks?kind=dormant_follow_up');
+    assert.deepEqual(dormantTasks.body.tasks.map((t) => t.accountName), ['Quiet Co']);
+
+    const last = await get('/api/sidekick/accounts/2/last-contact');
+    assert.equal(last.body.lastContact.date, '2026-10-02');
+    assert.equal(last.body.lastContact.author, 'Jessica');
+    assert.equal(last.body.lastContact.body, 'Called, wants spring catalog');
+    assert.equal(last.body.noteCount, 2);
+    assert.equal(last.body.lastOrderDate, '2026-07-14');
+    assert.equal(last.body.results[0].url, 'app://crm?company=2');
+
+    const account = await get('/api/sidekick/accounts/2');
+    assert.equal(account.body.lastContact.date, '2026-10-02');
+
+    const notes = await get('/api/sidekick/accounts/2/notes');
+    assert.equal(notes.body.results[0].url, 'app://crm?company=2');
+    const contacts = await get('/api/sidekick/accounts/2/contacts');
+    assert.equal(contacts.body.results[0].url, 'app://crm?company=2');
+    const buying = await get('/api/sidekick/accounts/2/buying');
+    assert.equal(buying.body.results[0].url, 'app://crm?company=2');
+
+    assert.equal((await get('/api/sidekick/accounts/999/last-contact')).status, 404);
+  });
+});
+
+test('GET /drafts returns a prefilled link and changes nothing', async () => {
+  const { deps } = fakeDeps();
+  await withServer(deps, async (get) => {
+    const ok = await get(`/api/sidekick/drafts?id=2&action=add_note&note=${encodeURIComponent('Left a voicemail')}`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.status, 'draft_ready');
+    assert.equal(ok.body.savedYet, false);
+    assert.equal(ok.body.account.name, 'Quiet Co');
+    assert.equal(ok.body.results[0].url, 'app://crm?company=2&action=add_note&note=Left+a+voicemail');
+
+    const mine = await get('/api/sidekick/drafts?id=2&action=assign_to_me');
+    assert.equal(mine.body.status, 'already_yours');
+
+    assert.equal((await get('/api/sidekick/drafts?id=999&action=add_note&note=x')).status, 404);
+    assert.equal((await get('/api/sidekick/drafts?id=2&action=bogus')).status, 400);
+
+    deps.staffStore.findByShopifyUserId = async () => null;
+    const noStaff = await get('/api/sidekick/drafts?id=2&action=add_note&note=x');
+    assert.equal(noStaff.body.status, 'staff_required');
+  });
+});
+
 test('get_account_notes, follow-ups, buying intel; no rep_book route', async () => {
   const { deps } = fakeDeps();
   await withServer(deps, async (get) => {
@@ -410,7 +541,7 @@ test('analytics tools say backfilling until the rollup is complete', async () =>
 });
 
 
-test('the Sidekick extension stays read-only and its text does not steer Sidekick', () => {
+test('the Sidekick extension fetches data, and its one write path is a link confirmed in the app', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const dir = path.join(__dirname, '..', 'extensions', 'wholesale-crm-tools');
@@ -418,18 +549,33 @@ test('the Sidekick extension stays read-only and its text does not steer Sidekic
   const instructions = fs.readFileSync(path.join(dir, 'instructions.md'), 'utf8');
   const toml = fs.readFileSync(path.join(dir, 'shopify.extension.toml'), 'utf8');
   const source = fs.readFileSync(path.join(dir, 'src', 'index.js'), 'utf8');
+  const backend = fs.readFileSync(path.join(__dirname, '..', 'lib', 'sidekick.js'), 'utf8');
 
   assert.ok(tools.length <= 20);
   for (const tool of tools) {
     assert.ok(tool.name.length <= 64, tool.name);
     assert.ok(tool.description.length <= 512, tool.name);
   }
-  // Shopify's policy: data extensions fetch data only.
-  const allText = JSON.stringify(tools) + instructions + toml;
-  for (const word of ['prepare_', 'assign_to_me', 'add_note', 'mark a sample', 'save', 'update']) {
-    assert.ok(!allText.toLowerCase().includes(word), `mutation wording: ${word}`);
-  }
+  // The extension only sends GET requests, and the backend defines GET routes
+  // only: no direct POST/PUT/PATCH/DELETE from a Sidekick tool.
   assert.ok(!/method:\s*'(POST|PUT|PATCH|DELETE)'/i.test(source), 'extension only sends GET requests');
+  assert.ok(!/router\.(post|put|patch|delete)\(/i.test(backend), 'sidekick backend is GET-only');
+  // Mutation wording lives only in prepare_account_update, the one tool whose
+  // answer is a prefilled app link: it changes nothing itself, and the write
+  // happens only when a person confirms it in the app (see docs/SIDEKICK.md).
+  const draft = tools.find((t) => t.name === 'prepare_account_update');
+  assert.ok(draft, 'prepare_account_update tool exists');
+  assert.match(draft.description, /Does not save anything/);
+  const others = tools.filter((t) => t.name !== 'prepare_account_update');
+  const otherText = JSON.stringify(others);
+  for (const word of ['prepare_', 'assign_to_me', 'add_note', 'mark a sample', 'save', 'update']) {
+    assert.ok(!otherText.toLowerCase().includes(word), `mutation wording outside draft tool: ${word}`);
+  }
+  const instructionsWithoutDraftName = instructions.replaceAll('prepare_account_update', '');
+  for (const word of ['add_note', 'assign_to_me', 'save', 'update']) {
+    assert.ok(!instructionsWithoutDraftName.toLowerCase().includes(word), `instructions mutation wording: ${word}`);
+    assert.ok(!toml.toLowerCase().includes(word), `extension toml mutation wording: ${word}`);
+  }
   // No behavioral overrides aimed at Sidekick.
   for (const phrase of [/\bnever\b/i, /\bdo not\b/i, /\bdon't\b/i, /\bmust\b/i, /\balways\b/i, /\bignore\b/i, /\byou are\b/i]) {
     assert.ok(!phrase.test(instructions), `instructions contain ${phrase}`);

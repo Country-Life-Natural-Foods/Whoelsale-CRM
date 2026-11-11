@@ -7,7 +7,7 @@ embedded = true
 
 # Sidekick reads Wholesale CRM data through extensions/wholesale-crm-tools.
 [sidekick]
-extensions_summary = "Wholesale CRM for Country Life's B2B accounts: assigned sales reps, CRM notes, sample boxes, last-order follow-ups and account buying history."
+extensions_summary = "Wholesale CRM for Country Life's B2B accounts: assigned sales reps, CRM notes, last contact, open follow-up tasks, sample boxes, last-order follow-ups and account buying history."
 
 [webhooks]
 api_version = "2026-01"
