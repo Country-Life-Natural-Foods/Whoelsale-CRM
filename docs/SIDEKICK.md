@@ -1,20 +1,20 @@
 # Sidekick extension (Wholesale CRM data)
 
 Sidekick, Shopify's admin assistant, can read Wholesale CRM data through the
-`wholesale-crm-tools` extension, and can prepare changes (notes, sample boxes,
-self-assignment) that the user confirms in the app. Sidekick never saves
-anything itself. Account results link into the app (`app://crm?company=…`).
+`wholesale-crm-tools` extension. It is strictly read-only. Account results
+link into the app (`app://crm?company=…`), where reps add notes, update sample
+boxes or claim accounts as usual.
 
 ## Tools
 
 | Tool | Endpoint | Answers |
 |---|---|---|
 | `search_accounts` | `GET /api/sidekick/accounts?query&rep&status&limit` | Find accounts by name, email or phone; filter by rep or status |
-| `get_account` | `GET /api/sidekick/accounts/:id` | Rep, last order, days since, usual order gap, contacts, sample box, latest 3 notes |
+| `get_account` | `GET /api/sidekick/accounts/:id` | Rep, last order, days since, usual order gap, contact count, sample box, latest 3 notes |
+| `get_account_contacts` | `GET /api/sidekick/accounts/:id/contacts` | Contacts (name, title, email, phone, main) and business phone. The only tool that returns contact details |
 | `get_account_notes` | `GET /api/sidekick/accounts/:id/notes?limit` | Note history, newest first |
 | `accounts_needing_follow_up` | `GET /api/sidekick/follow-ups?kind&rep&limit` | `dormant`, `at_risk`, `sample_follow_up`, `new_partner` |
 | `account_buying_intel` | `GET /api/sidekick/accounts/:id/buying` | Revenue this year vs. same dates last year, top products |
-| `prepare_account_update` | `POST /api/sidekick/drafts` `{id, action, note, followUpDate}` | Builds a link that opens the account with a draft: `add_note`, `sample_sent`, `sample_received`, `assign_to_me`. Saves nothing |
 | `wholesale_summary` | `GET /api/sidekick/analytics/summary?startDate&endDate` | Analytics page KPIs: revenue, orders, average order value, accounts that ordered, same dates last year, top product |
 | `revenue_trend` | `GET /api/sidekick/analytics/trend?startDate&endDate&period` | Revenue and orders by day, week or month (max 60 points, newest kept) |
 | `top_accounts` | `GET /api/sidekick/analytics/accounts?startDate&endDate&sortBy&limit` | Accounts ranked by revenue or orders for the range |
@@ -32,23 +32,31 @@ up only as the assigned rep on an account and as a filter on account lists
 (`rep=me` works). Revenue rankings (`top_accounts`) carry no rep field.
 Every staff member with app access sees all accounts, same as the app.
 
-## Drafts: Sidekick prepares, the rep saves
+## Shopify's content and safety policy (why there are no write tools)
 
-Shopify only lets the read tools fetch data. Its built-in action types have
-no CRM or note type (an unknown type is rejected at deploy). So writes work
-like this:
+The first deploy (2026-11-11) was **blocked by Shopify's Sidekick safety
+scan**. Shopify checks descriptions, instructions and input schemas at
+deploy, and tool responses at runtime. The rules that matter here:
 
-1. Rep: "Log a note on Green Valley: called Sarah, wants the spring catalog."
-2. `prepare_account_update` checks the account and the rep's staff record,
-   then returns `app://crm?company=…&action=add_note&note=…`.
-3. The link opens `/crm` (same page as `/`). `public/index.html`
-   (`applySidekickDraft`) opens the account, fills the field, shows a
-   "Drafted by Sidekick" banner and removes the draft from the URL.
-4. The rep clicks Save Note / Mark sent / Mark received / Assign to me. That
-   uses the normal endpoints and permission checks.
+- **Data extensions must be read-only.** Changes belong in action extensions
+  (`admin.app.intent.*`), and those need an intent type from Shopify's list.
+  The list has no CRM, note or task type, so Sidekick has no write tools.
+  The `prepare_account_update` tool (draft links for notes, sample boxes and
+  assigning) was removed for this reason.
+- **No steering.** `instructions.md` may explain how the tools fit together,
+  but must not tell Sidekick how to behave ("never say…", "do not…",
+  "tell the user…"). Keep it factual.
+- **No unrequested customer data.** Contact emails and phones come only from
+  `get_account_contacts`.
+- Runtime `message` fields are factual status text, not directions.
 
-`assign_to_me` follows the app's rules: a rep can claim an unassigned account
-but not one that has another rep (managers can reassign).
+`test/sidekick.test.js` checks the extension files for mutation wording,
+non-GET requests and steering phrases, so a regression fails `npm test`
+before deploy.
+
+`public/index.html` still handles `app://crm?company=…&action=…` links
+(`applySidekickDraft`). Nothing calls them with an action today; they are kept
+for a future action extension if Shopify adds a fitting intent type.
 
 **Who can write:** saving or deleting notes and updating sample boxes needs a
 claimed staff record (`requireStaffWriter` in `api/index.js`), in the app and

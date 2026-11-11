@@ -20,8 +20,8 @@ function accountPath(id) {
   return encodeURIComponent(digits ? digits[1] : value);
 }
 
-async function getJson(path, init) {
-  const response = await fetch(path, init);
+async function getJson(path) {
+  const response = await fetch(path);
   let body = null;
   try {
     body = await response.json();
@@ -44,19 +44,14 @@ export default () => {
   shopify.tools.register('get_account_notes', async ({ id, limit } = {}) =>
     getJson(`/api/sidekick/accounts/${accountPath(id)}/notes${qs({ limit })}`));
 
+  shopify.tools.register('get_account_contacts', async ({ id } = {}) =>
+    getJson(`/api/sidekick/accounts/${accountPath(id)}/contacts`));
+
   shopify.tools.register('accounts_needing_follow_up', async ({ kind, rep, limit } = {}) =>
     getJson(`/api/sidekick/follow-ups${qs({ kind, rep, limit })}`));
 
   shopify.tools.register('account_buying_intel', async ({ id } = {}) =>
     getJson(`/api/sidekick/accounts/${accountPath(id)}/buying`));
-
-  // Read-only: returns a pre-filled link; the user saves in the app.
-  shopify.tools.register('prepare_account_update', async ({ id, action, note, followUpDate } = {}) =>
-    getJson('/api/sidekick/drafts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: accountPath(id), action, note, followUpDate }),
-    }));
 
   shopify.tools.register('wholesale_summary', async ({ startDate, endDate } = {}) =>
     getJson(`/api/sidekick/analytics/summary${qs({ startDate, endDate })}`));

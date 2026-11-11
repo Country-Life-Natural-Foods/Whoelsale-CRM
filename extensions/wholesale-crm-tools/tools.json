@@ -1,7 +1,7 @@
 [
   {
     "name": "search_accounts",
-    "description": "Search Wholesale CRM B2B accounts by company name, contact email or phone. Filter by assigned sales rep and by order status. Returns each account's id, rep, last order date, days since last order, status and lifetime order count. Use this first to find an account id.",
+    "description": "Search Wholesale CRM B2B accounts by company name, contact email or phone, with optional filters for assigned sales rep and order status. Returns each account's id, assigned rep, last order date, days since last order, status and lifetime order count.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -34,7 +34,7 @@
   },
   {
     "name": "get_account",
-    "description": "Full CRM summary for one wholesale account: assigned rep and since when, last order date, days since last order, typical days between orders, lifetime orders, contacts, location, sample box status and the three latest CRM notes.",
+    "description": "CRM summary for one wholesale account: assigned rep and assignment date, last order date, days since last order, typical days between orders, lifetime orders, location, number of contacts, sample box status and the three most recent CRM notes.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -50,7 +50,7 @@
   },
   {
     "name": "get_account_notes",
-    "description": "CRM note history for one wholesale account, newest first, with date and author. Use for questions like what was discussed, last check-in, or call notes.",
+    "description": "CRM note history for one wholesale account, newest first, with date and author.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -63,6 +63,22 @@
           "minimum": 1,
           "maximum": 25,
           "description": "Maximum notes to return (default 15)."
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  {
+    "name": "get_account_contacts",
+    "description": "Contacts for one wholesale account: name, title, email, phone and whether they are the main contact, plus the account's business phone.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Account id from search_accounts."
         }
       },
       "required": [
@@ -112,43 +128,6 @@
       },
       "required": [
         "id"
-      ]
-    }
-  },
-  {
-    "name": "prepare_account_update",
-    "description": "Prepare a change to a wholesale account for the user to confirm: add a CRM note, mark a sample box sent or received, or assign the account to the current user. Does not save anything. Returns a link that opens the account in Wholesale CRM with the change filled in; the user clicks Save there.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "description": "Account id from search_accounts."
-        },
-        "action": {
-          "type": "string",
-          "enum": [
-            "add_note",
-            "sample_sent",
-            "sample_received",
-            "assign_to_me"
-          ],
-          "description": "add_note = CRM note or call log; sample_sent / sample_received = sample box status; assign_to_me = make the current user the account's rep."
-        },
-        "note": {
-          "type": "string",
-          "maxLength": 500,
-          "description": "Note text for add_note (required), or what was in the sample box for sample_sent. Write it the way a rep would, in plain sentences."
-        },
-        "followUpDate": {
-          "type": "string",
-          "format": "date",
-          "description": "Optional follow-up date for sample_sent, YYYY-MM-DD."
-        }
-      },
-      "required": [
-        "id",
-        "action"
       ]
     }
   },
