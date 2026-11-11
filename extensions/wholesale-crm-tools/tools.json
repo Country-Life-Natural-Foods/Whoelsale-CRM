@@ -116,6 +116,50 @@
     }
   },
   {
+    "name": "list_open_tasks",
+    "description": "Open follow-up tasks for wholesale accounts, derived from sample boxes sent and not yet received, dormant accounts and at-risk accounts. Returns each task's account, kind, due date and summary, with optional filters for one rep and one kind.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "sample_follow_up",
+            "dormant_follow_up",
+            "at_risk_follow_up"
+          ],
+          "description": "Which task list to return. Leave empty for all kinds, soonest due first."
+        },
+        "rep": {
+          "type": "string",
+          "description": "Sales rep name or email, or \"me\" for the current user."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum tasks to return (default 10)."
+        }
+      }
+    }
+  },
+  {
+    "name": "get_last_contact",
+    "description": "Most recent CRM note for one wholesale account: date, author, note text and days since, with the last order date for context. Returns no contact when the account has no notes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Account id from search_accounts."
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  {
     "name": "account_buying_intel",
     "description": "Buying history for one wholesale account: year-to-date revenue and orders compared with the same dates last year, percent change, orders placed outside wholesale checkout, and top products by orders with units and revenue.",
     "inputSchema": {
@@ -128,6 +172,43 @@
       },
       "required": [
         "id"
+      ]
+    }
+  },
+  {
+    "name": "prepare_account_update",
+    "description": "Prepare a change to a wholesale account for the user to confirm: add a CRM note, mark a sample box sent or received, or assign the account to the current user. Does not save anything. Returns a link that opens the account in Wholesale CRM with the change filled in; the user clicks Save there.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Account id from search_accounts."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "add_note",
+            "sample_sent",
+            "sample_received",
+            "assign_to_me"
+          ],
+          "description": "add_note = CRM note or call log; sample_sent / sample_received = sample box status; assign_to_me = make the current user the account's rep."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Note text for add_note (required), or what was in the sample box for sample_sent. Write it the way a rep would, in plain sentences."
+        },
+        "followUpDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Optional follow-up date for sample_sent, YYYY-MM-DD."
+        }
+      },
+      "required": [
+        "id",
+        "action"
       ]
     }
   },
