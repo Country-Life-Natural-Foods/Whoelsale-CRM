@@ -43,6 +43,7 @@ const { configureSessionStorage } = require('../lib/configure-session-storage');
 const { configureStaffStore } = require('../lib/staff-store');
 const { configureCompanyMetrics } = require('../lib/company-metrics');
 const { shopifyGraphql, uniqueErrorMessages } = require('../lib/shopify-gql');
+const { createSidekickRouter } = require('../lib/sidekick');
 
 applyShopifyDeploymentEnv();
 
@@ -972,6 +973,41 @@ const fetchAllCompanies = async (client, options = {}) => {
   return pending;
 };
 
+// Sidekick needs answers in under a second, so it never waits on the ~15s
+// Shopify company walk. It reads the in-memory list or the Postgres snapshot
+// (refreshing a stale one in the background) and returns null when neither
+// exists yet, after starting a background fetch for next time.
+async function getCompanyListForSidekick(client, shop) {
+  if (!client || !shop) return null;
+  const cached = commissionCache.get(shop, COMPANIES_COMMISSIONS_KEY);
+  if (cached) return cached;
+  let snapshot = null;
+  if (companyMetrics.enabled) {
+    try {
+      snapshot = await companyMetrics.getCompanySnapshot(shop);
+    } catch (err) {
+      console.error('[sidekick] reading company snapshot failed', err);
+    }
+  }
+  const ageMs = snapshot ? Date.now() - snapshot.updatedAt.getTime() : Infinity;
+  if (!snapshot || ageMs >= COMPANIES_SNAPSHOT_FRESH_MS) {
+    if (!companiesCommissionsInflight.has(shop)) {
+      // Commissions requests may await this same promise, so it must keep
+      // its real result/rejection; logging and cleanup hang off side chains.
+      const pending = refreshCommissionCompanies(client, shop, { mode: 'commissions' });
+      companiesCommissionsInflight.set(shop, pending);
+      pending
+        .catch((err) => console.error('[sidekick] background company refresh failed', err))
+        .finally(() => companiesCommissionsInflight.delete(shop));
+    }
+  }
+  if (snapshot && ageMs < COMPANIES_SNAPSHOT_MAX_MS) {
+    commissionCache.set(shop, COMPANIES_COMMISSIONS_KEY, snapshot.companies);
+    return snapshot.companies;
+  }
+  return null;
+}
+
 const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress } = {}) => {
   if (!client) return [];
   const query = mode === 'commissions'
@@ -1017,6 +1053,9 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
             assignedStaffMetafield: metafield(namespace: "clnf", key: "assigned_staff") {
               value
               updatedAt
+            }
+            sampleBoxMetafield: metafield(namespace: "clnf", key: "sample_box") {
+              value
             }
           }
         }
@@ -1245,12 +1284,22 @@ const fetchAllCompaniesFromShopify = async (client, { mode = 'full', onProgress 
           console.warn('Failed to parse assigned staff for company', company.id, e.message);
         }
         const contact = companyContactDetails(company);
+        // Sample-box status rides along so Sidekick can list sample follow-ups
+        // from the snapshot without paging Shopify.
+        let sampleBox = { status: 'none' };
+        try {
+          const parsed = company.sampleBoxMetafield?.value ? JSON.parse(company.sampleBoxMetafield.value) : null;
+          if (parsed && ['none', 'sent', 'received'].includes(parsed.status)) sampleBox = parsed;
+        } catch (e) {
+          console.warn('Failed to parse sample box for company', company.id, e.message);
+        }
         return {
           id: company.id,
           name: company.name,
           assignedStaff,
           email: contact.email,
           phone: contact.phone,
+          sampleBox,
         };
       }));
     } else {
@@ -1862,6 +1911,19 @@ app.get('/api/companies/:companyId/intelligence', validateAuthenticatedSession, 
     res.status(500).json({ error: error.message });
   }
 });
+
+// SIDEKICK ENDPOINTS
+// Read-only data for the `wholesale-crm-tools` Sidekick extension. Auth is a
+// session token from Shopify's extension sandbox (token exchange when no
+// offline session is stored). See lib/sidekick.js and docs/SIDEKICK.md.
+app.use('/api/sidekick', createSidekickRouter({
+  shopify,
+  sessionStorage: shopifySessionStorage,
+  companyMetrics,
+  staffStore,
+  getCompanyList: getCompanyListForSidekick,
+  intelligenceRanges: () => companyIntelligenceRanges(),
+}));
 
 // STAFF MANAGEMENT ENDPOINTS
 

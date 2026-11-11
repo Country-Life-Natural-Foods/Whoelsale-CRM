@@ -1,0 +1,223 @@
+[
+  {
+    "name": "search_accounts",
+    "description": "Search Wholesale CRM B2B accounts by company name, contact email or phone. Filter by assigned sales rep and by order status. Returns each account's id, rep, last order date, days since last order, status and lifetime order count. Use this first to find an account id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Words to match against company name, contact email or phone. Leave empty to list accounts by filter only."
+        },
+        "rep": {
+          "type": "string",
+          "description": "Sales rep name or email. Use \"me\" for the current user's own accounts, or \"unassigned\" for accounts with no rep."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "at_risk",
+            "dormant",
+            "never_ordered"
+          ],
+          "description": "active = ordered in the last 30 days, at_risk = 31-89 days, dormant = 90+ days, never_ordered = no orders."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum accounts to return (default 10)."
+        }
+      }
+    }
+  },
+  {
+    "name": "get_account",
+    "description": "Full CRM summary for one wholesale account: assigned rep and since when, last order date, days since last order, typical days between orders, lifetime orders, contacts, location, sample box status and the three latest CRM notes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Account id from search_accounts (gid://shopify/Company/123 or 123)."
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  {
+    "name": "get_account_notes",
+    "description": "CRM note history for one wholesale account, newest first, with date and author. Use for questions like what was discussed, last check-in, or call notes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Account id from search_accounts."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum notes to return (default 15)."
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  {
+    "name": "accounts_needing_follow_up",
+    "description": "Wholesale accounts that need attention: dormant (90+ days since last order), at_risk (31-89 days), sample_follow_up (sample box sent, not yet received, ordered by follow-up date) or new_partner (1-3 lifetime orders). Can be limited to one rep.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "dormant",
+            "at_risk",
+            "sample_follow_up",
+            "new_partner"
+          ],
+          "description": "Which follow-up list to return (default dormant)."
+        },
+        "rep": {
+          "type": "string",
+          "description": "Sales rep name or email, or \"me\" for the current user."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum accounts to return (default 10)."
+        }
+      }
+    }
+  },
+  {
+    "name": "account_buying_intel",
+    "description": "Buying history for one wholesale account: year-to-date revenue and orders compared with the same dates last year, percent change, orders placed outside wholesale checkout, and top products by orders with units and revenue.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Account id from search_accounts."
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  {
+    "name": "wholesale_summary",
+    "description": "Wholesale (B2B) totals for a date range, like the Wholesale CRM Analytics page: revenue, orders, average order value, number of accounts that ordered, the same dates last year with percent change, and the top product. Defaults to year to date.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "First day, YYYY-MM-DD. Defaults to January 1 of this year."
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Last day (inclusive), YYYY-MM-DD. Defaults to today."
+        }
+      }
+    }
+  },
+  {
+    "name": "revenue_trend",
+    "description": "Wholesale revenue and order counts over time for a date range, grouped by day, week (Monday start) or month. Defaults to year to date by month.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "First day, YYYY-MM-DD. Defaults to January 1 of this year."
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Last day (inclusive), YYYY-MM-DD. Defaults to today."
+        },
+        "period": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month"
+          ],
+          "description": "Grouping (default month)."
+        }
+      }
+    }
+  },
+  {
+    "name": "top_accounts",
+    "description": "Wholesale accounts ranked by revenue or by number of orders in a date range, with orders and average order value. Defaults to year to date by revenue.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "First day, YYYY-MM-DD. Defaults to January 1 of this year."
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Last day (inclusive), YYYY-MM-DD. Defaults to today."
+        },
+        "sortBy": {
+          "type": "string",
+          "enum": [
+            "revenue",
+            "orders"
+          ],
+          "description": "Ranking (default revenue)."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum rows to return (default 10)."
+        }
+      }
+    }
+  },
+  {
+    "name": "top_products",
+    "description": "Best-selling products to wholesale accounts in a date range, ranked by revenue, with units sold and average unit price. Defaults to year to date.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "First day, YYYY-MM-DD. Defaults to January 1 of this year."
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Last day (inclusive), YYYY-MM-DD. Defaults to today."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum rows to return (default 10)."
+        }
+      }
+    }
+  }
+]
