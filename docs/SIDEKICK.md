@@ -2,8 +2,7 @@
 
 Sidekick, Shopify's admin assistant, can read Wholesale CRM data through the
 `wholesale-crm-tools` extension. It is strictly read-only. Account results
-link into the app (`app://crm?company=…`), where reps add notes, update sample
-boxes or claim accounts as usual.
+link into the app, where reps add notes, update sample boxes or claim accounts.
 
 ## Tools
 
@@ -16,7 +15,6 @@ boxes or claim accounts as usual.
 | `accounts_needing_follow_up` | `GET /api/sidekick/follow-ups?kind&rep&limit` | `dormant`, `at_risk`, `sample_follow_up`, `new_partner` |
 | `list_open_tasks` | `GET /api/sidekick/tasks?kind&rep&limit` | Open follow-up tasks: `sample_follow_up`, `dormant_follow_up`, `at_risk_follow_up` |
 | `get_last_contact` | `GET /api/sidekick/accounts/:id/last-contact` | Most recent CRM note (date, author, text, days since) plus last order date |
-| `prepare_account_update` | `GET /api/sidekick/drafts?id&action&note&followUpDate` | Link only: opens the account with a note, sample-box change or self-assignment filled in for the merchant to confirm in the app |
 | `account_buying_intel` | `GET /api/sidekick/accounts/:id/buying` | Revenue this year vs. same dates last year, top products |
 | `wholesale_summary` | `GET /api/sidekick/analytics/summary?startDate&endDate` | Analytics page KPIs: revenue, orders, average order value, accounts that ordered, same dates last year, top product |
 | `revenue_trend` | `GET /api/sidekick/analytics/trend?startDate&endDate&period` | Revenue and orders by day, week or month (max 60 points, newest kept) |
@@ -38,26 +36,18 @@ account (`get_account` also carries it as `lastContact`); with no notes it
 answers `lastContact: null` and still gives the last order date. Neither tool
 creates, edits or closes anything.
 
-**Writes go through a link plus human accept, not a Sidekick write.** The
-write actions merchants ask for after a search are adding a CRM note,
-updating a sample box and claiming an account. That is Shopify's
-`admin.app.intent.link` pattern (search, open, edit): Sidekick returns a link
-that opens the account page in the Wholesale CRM app with the draft filled
-in, and the merchant hits Accept / Confirm on that page for the write to go
-live. No declared intent extension exists, because Shopify's supported
-intent types (`application/*`, `shopify/*`) have no CRM, note or task type,
-and the docs say not to pick an unrelated type as a placeholder: an
-unsupported type fails deploy. The link itself is the valid link type for
-deploy: an `app://` URL, the embedded-app link shape the Sidekick docs bless
-for linking into an app. If Shopify adds a fitting intent type, declare an
-`admin.app.intent.link` extension with that type then; until that point, the
-plain `app://` link is the mechanism. `prepare_account_update` is the tool
-that builds that link (GET `/api/sidekick/drafts`); the app side
-(`applySidekickDraft` in `public/index.html`) shows the draft in a "Drafted
-by Sidekick" banner for review, and nothing saves until the merchant clicks
-Save Note / Mark sent / Mark received / Assign to me. The draft params are
-cleared from the address on open, so a reload does not fill the draft in
-again.
+**No writes from Sidekick (yet).** Shopify's policy says data extensions stay
+read-only and mutations belong in *action* extensions
+(`admin.app.intent.link` / `.render`) where the merchant confirms the change.
+Action extensions need a supported `application/*` or `shopify/*` intent type
+(23 `application/*` types exist: email, ticket, quote, etc.; none is a CRM note
+or sample box), and an unsupported type fails `shopify app deploy`. So notes,
+sample boxes and claiming accounts stay in the app. The earlier
+`prepare_account_update` draft-link tool was removed on 2026-11-12 after three
+safety-scan blocks. The backend `/api/sidekick/drafts` route and the app-side
+`applySidekickDraft` banner are left in place but unused. To get Sidekick
+writes: propose a CRM type in Shopify's app intent types repository, or
+declare the closest honest existing type once Shopify approves it.
 
 **Never returned:** commission amounts or tiers, and revenue grouped by sales
 rep (both live in the PIN-protected Commissions and Reports pages). A rep shows
@@ -65,47 +55,32 @@ up only as the assigned rep on an account and as a filter on account lists
 (`rep=me` works). Revenue rankings (`top_accounts`) carry no rep field.
 Every staff member with app access sees all accounts, same as the app.
 
-## Shopify's content and safety policy (how the write link stays inside it)
+## Shopify's content and safety policy
 
-The first deploy (2026-11-11) was **blocked by Shopify's Sidekick safety
-scan**. Shopify checks descriptions, instructions and input schemas at
-deploy, and tool responses at runtime. The rules that matter here:
+Blocked 2026-11-11 (twice) and 2026-11-12 (versions 1204437090305,
+1204443611137, 1204743143425). Emails give no reason, only "didn't pass our
+safety scan". Deploy scans descriptions, instructions and input schemas;
+runtime scans tool responses. Rules:
 
-- **Data tools fetch only.** Every tool except `prepare_account_update`
-  reads data. `prepare_account_update` is the single exception, and it is
-  link-only: it returns a prefilled `app://` link over GET
-  (`/api/sidekick/drafts`), changes nothing server-side, and the extension
-  sends no POST, PUT, PATCH or DELETE. The write itself happens in the app,
-  after a person reviews the draft and confirms it. That is the correction
-  Isaac made on 2026-11-11: the draft-link workaround stays, as a plain
-  navigation link with human accept, not a direct Sidekick write.
-- **No steering.** `instructions.md` may explain how the tools fit together,
-  but must not tell Sidekick how to behave ("never say…", "do not…",
-  "tell the user…"). Keep it factual.
-- **No unrequested customer data.** Contact emails and phones come only from
+- **Data extensions are read-only.** Every tool fetches; none builds a write
+  link or draft.
+- **No steering** in `instructions.md` or tool text ("never", "do not",
+  "tell the user"). Keep it factual.
+- **No unrequested customer data.** Contact details only from
   `get_account_contacts`.
-- Runtime `message` fields are factual status text, not directions.
+- **No promotion or upsell**; tools must match what the app does (2.2.8, 2.2.9).
+- Limits: tool description 512 chars, instructions 2,048 tokens, extension
+  description 256 tokens, 20 tools, responses < 4,000 tokens and < 1s.
 
-`test/sidekick.test.js` checks the extension files for GET-only requests,
-mutation wording outside the draft-link tool, and steering phrases, so a
-regression fails `npm test` before deploy.
-
-**Residual scan risk, stated plainly:** the scan blocked the Nov 11 deploy
-when the draft tool existed as a POST. The tool is now GET-only and
-link-only, which is the closest reading of the docs' link pattern without a
-fitting intent type, but the scan could still flag a data-extension tool
-that builds write links. If `shopify app deploy` rejects it, the fallback is
-to move the same link-builder into a declared `admin.app.intent.link`
-extension once Shopify offers a fitting intent type, and keep the data tools
-read-only in the meantime. Do not work around a rejection by declaring an
-unrelated intent type.
+`test/sidekick.test.js` enforces read-only, no draft wording and no steering.
+Check results in the Dev Dashboard under the app's logs ("Sidekick event",
+OK/Error) while running `shopify app dev`; after `shopify app deploy`, an
+email arrives only if the version is blocked.
 
 **Who can write:** saving or deleting notes and updating sample boxes needs a
 claimed staff record (`requireStaffWriter` in `api/index.js`), in the app and
 from Sidekick alike. The note author and sample "sent by" come from that
-record, not from the request. `prepare_account_update` also checks the
-caller's staff record first and answers `staff_required` without a link when
-there is none.
+record, not from the request. 
 
 ## How it works
 

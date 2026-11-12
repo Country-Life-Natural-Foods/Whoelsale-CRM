@@ -176,43 +176,6 @@
     }
   },
   {
-    "name": "prepare_account_update",
-    "description": "Prepare a change to a wholesale account for the user to confirm: add a CRM note, mark a sample box sent or received, or assign the account to the current user. Does not save anything. Returns a link that opens the account in Wholesale CRM with the change filled in; the user clicks Save there.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "description": "Account id from search_accounts."
-        },
-        "action": {
-          "type": "string",
-          "enum": [
-            "add_note",
-            "sample_sent",
-            "sample_received",
-            "assign_to_me"
-          ],
-          "description": "add_note = CRM note or call log; sample_sent / sample_received = sample box status; assign_to_me = make the current user the account's rep."
-        },
-        "note": {
-          "type": "string",
-          "maxLength": 500,
-          "description": "Note text for add_note (required), or what was in the sample box for sample_sent. Write it the way a rep would, in plain sentences."
-        },
-        "followUpDate": {
-          "type": "string",
-          "format": "date",
-          "description": "Optional follow-up date for sample_sent, YYYY-MM-DD."
-        }
-      },
-      "required": [
-        "id",
-        "action"
-      ]
-    }
-  },
-  {
     "name": "wholesale_summary",
     "description": "Wholesale (B2B) totals for a date range, like the Wholesale CRM Analytics page: revenue, orders, average order value, number of accounts that ordered, the same dates last year with percent change, and the top product. Defaults to year to date.",
     "inputSchema": {

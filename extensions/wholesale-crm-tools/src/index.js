@@ -59,11 +59,6 @@ export default () => {
   shopify.tools.register('account_buying_intel', async ({ id } = {}) =>
     getJson(`/api/sidekick/accounts/${accountPath(id)}/buying`));
 
-  // Link only: returns a pre-filled app link; the user confirms the change
-  // in the app. GET, like every other tool here.
-  shopify.tools.register('prepare_account_update', async ({ id, action, note, followUpDate } = {}) =>
-    getJson(`/api/sidekick/drafts${qs({ id: accountPath(id), action, note, followUpDate })}`));
-
   shopify.tools.register('wholesale_summary', async ({ startDate, endDate } = {}) =>
     getJson(`/api/sidekick/analytics/summary${qs({ startDate, endDate })}`));
 

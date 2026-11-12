@@ -541,7 +541,7 @@ test('analytics tools say backfilling until the rollup is complete', async () =>
 });
 
 
-test('the Sidekick extension fetches data, and its one write path is a link confirmed in the app', () => {
+test('the Sidekick extension is a read-only data extension with no write tools or write links', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const dir = path.join(__dirname, '..', 'extensions', 'wholesale-crm-tools');
@@ -556,25 +556,14 @@ test('the Sidekick extension fetches data, and its one write path is a link conf
     assert.ok(tool.name.length <= 64, tool.name);
     assert.ok(tool.description.length <= 512, tool.name);
   }
-  // The extension only sends GET requests, and the backend defines GET routes
-  // only: no direct POST/PUT/PATCH/DELETE from a Sidekick tool.
+  // Shopify policy: data extensions stay read-only; mutations belong in action
+  // extensions. The extension sends GET only and has no write or draft tool.
   assert.ok(!/method:\s*'(POST|PUT|PATCH|DELETE)'/i.test(source), 'extension only sends GET requests');
-  assert.ok(!/router\.(post|put|patch|delete)\(/i.test(backend), 'sidekick backend is GET-only');
-  // Mutation wording lives only in prepare_account_update, the one tool whose
-  // answer is a prefilled app link: it changes nothing itself, and the write
-  // happens only when a person confirms it in the app (see docs/SIDEKICK.md).
-  const draft = tools.find((t) => t.name === 'prepare_account_update');
-  assert.ok(draft, 'prepare_account_update tool exists');
-  assert.match(draft.description, /Does not save anything/);
-  const others = tools.filter((t) => t.name !== 'prepare_account_update');
-  const otherText = JSON.stringify(others);
-  for (const word of ['prepare_', 'assign_to_me', 'add_note', 'mark a sample', 'save', 'update']) {
-    assert.ok(!otherText.toLowerCase().includes(word), `mutation wording outside draft tool: ${word}`);
-  }
-  const instructionsWithoutDraftName = instructions.replaceAll('prepare_account_update', '');
-  for (const word of ['add_note', 'assign_to_me', 'save', 'update']) {
-    assert.ok(!instructionsWithoutDraftName.toLowerCase().includes(word), `instructions mutation wording: ${word}`);
-    assert.ok(!toml.toLowerCase().includes(word), `extension toml mutation wording: ${word}`);
+  assert.ok(!/\/drafts/.test(source), 'extension does not call the draft endpoint');
+  assert.ok(!tools.some((t) => /prepare_|draft/i.test(t.name)), 'no write or draft tool');
+  const allText = JSON.stringify(tools) + instructions + toml;
+  for (const word of ['prepare_', 'assign_to_me', 'add_note', 'mark a sample', 'save', 'update', 'draft', 'app://']) {
+    assert.ok(!allText.toLowerCase().includes(word), `mutation or link wording in extension: ${word}`);
   }
   // No behavioral overrides aimed at Sidekick.
   for (const phrase of [/\bnever\b/i, /\bdo not\b/i, /\bdon't\b/i, /\bmust\b/i, /\balways\b/i, /\bignore\b/i, /\byou are\b/i]) {

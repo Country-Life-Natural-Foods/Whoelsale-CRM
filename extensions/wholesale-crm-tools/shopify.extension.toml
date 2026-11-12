@@ -2,7 +2,7 @@ api_version = "2026-10"
 
 [[extensions]]
 name = "Wholesale CRM data"
-description = "Wholesale (B2B) accounts from Country Life's Wholesale CRM: search accounts and contacts, assigned sales rep, last order date, order cadence, CRM notes, last contact, open follow-up tasks, sample boxes, dormant accounts, new partners, buying history, wholesale revenue, trends, top accounts and products, and draft links to confirm note or sample-box changes in the app."
+description = "Wholesale (B2B) accounts from Country Life's Wholesale CRM: search accounts and contacts, assigned sales rep, last order date, order cadence, CRM notes, last contact, open follow-up tasks, sample boxes, dormant accounts, new partners, buying history, wholesale revenue, trends, top accounts and products. Read-only."
 handle = "wholesale-crm-tools"
 
 uid = "094a92d0-433f-4dea-0c8d-89ce9b8a5eb1c7d1ded7"
