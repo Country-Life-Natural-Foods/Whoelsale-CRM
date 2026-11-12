@@ -12,6 +12,7 @@ These tools read Country Life's Wholesale CRM: B2B company accounts, the sales r
 - Order status follows the CRM badges: `active` is 30 days or less since the last order, `at_risk` is 31 to 89 days, `dormant` is 90 days or more, `never_ordered` has no orders.
 - `accounts_needing_follow_up` lists dormant, at-risk or new-partner accounts (1 to 3 lifetime orders), or sample boxes that were sent and not yet received.
 - `wholesale_summary`, `revenue_trend`, `top_accounts` and `top_products` cover a date range, year to date by default. The summary also includes the same dates last year.
+- This extension provides 13 tools: 8 account and CRM tools, `prepare_account_update`, and 4 analytics tools.
 
 ## Response fields
 
