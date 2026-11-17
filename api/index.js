@@ -41,9 +41,10 @@ const {
 } = require('../lib/resolve-shopify-hostname');
 const { configureSessionStorage } = require('../lib/configure-session-storage');
 const { configureStaffStore } = require('../lib/staff-store');
-const { configureCompanyMetrics } = require('../lib/company-metrics');
+const { configureCompanyMetrics, normalizeShop } = require('../lib/company-metrics');
 const { shopifyGraphql, uniqueErrorMessages } = require('../lib/shopify-gql');
 const { createSidekickRouter } = require('../lib/sidekick');
+const { createReportingRouter } = require('../lib/reporting-api');
 
 applyShopifyDeploymentEnv();
 
@@ -206,7 +207,14 @@ app.use(helmet({
   frameguard: false,
 }));
 
-app.use(cors());
+// The reporting API (/api/reporting) sets its own CORS policy: closed to
+// browsers unless REPORTING_API_CORS_ORIGINS lists an origin. The app-wide
+// `cors()` would answer every origin with `*`, so it skips that path.
+const appCors = cors();
+app.use((req, res, next) => {
+  if ((req.path || '').startsWith('/api/reporting/')) return next();
+  return appCors(req, res, next);
+});
 app.use(cookieParser());
 
 function isShopifyWebhookRequest(req) {
@@ -284,6 +292,7 @@ function isCommissionAggregationRequest(req) {
   if (p === '/api/commissions') return true;
   if (p === '/api/reports/commissions' || p === '/api/reports/commissions/export.csv') return true;
   if (p.startsWith('/api/analytics')) return true;
+  if (p.startsWith('/api/reporting/')) return true;
   return (
     p.startsWith('/api/commissions/') &&
     p !== '/api/commissions/access' &&
@@ -470,16 +479,21 @@ app.get('/analytics', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('ana
 
 const staffStore = configureStaffStore({ isProduction });
 
+// GraphQL client from the shop's stored offline session (falls back to any
+// stored session with a token). Used by webhooks/backfill and the reporting
+// API, which have no merchant browser session.
+async function getOfflineGraphqlClient(shopDomain) {
+  if (!shopDomain || typeof shopifySessionStorage.findSessionsByShop !== 'function') return null;
+  const sessions = await shopifySessionStorage.findSessionsByShop(shopDomain);
+  const session = (sessions || []).find((s) => s?.accessToken && !s.isOnline)
+    || (sessions || []).find((s) => s?.accessToken);
+  if (!session) return null;
+  return new shopify.clients.Graphql({ session });
+}
+
 const companyMetrics = configureCompanyMetrics({
   isProduction,
-  getOfflineGraphqlClient: async (shopDomain) => {
-    if (typeof shopifySessionStorage.findSessionsByShop !== 'function') return null;
-    const sessions = await shopifySessionStorage.findSessionsByShop(shopDomain);
-    const session = (sessions || []).find((s) => s?.accessToken && !s.isOnline)
-      || (sessions || []).find((s) => s?.accessToken);
-    if (!session) return null;
-    return new shopify.clients.Graphql({ session });
-  },
+  getOfflineGraphqlClient,
 });
 
 function orderWebhookHandler() {
@@ -1962,6 +1976,38 @@ app.use('/api/sidekick', createSidekickRouter({
   intelligenceRanges: () => companyIntelligenceRanges(),
 }));
 
+// REPORTING API
+// Read-only data for an external reporting agent/app, API-key gated
+// (REPORTING_API_KEY). See lib/reporting-api.js and docs/REPORTING_API.md.
+let reportingShopPromise = null;
+async function resolveReportingShop() {
+  const configured = String(process.env.REPORTING_SHOP || process.env.SHOPIFY_SHOP_DOMAIN || '').trim();
+  if (configured) return normalizeShop(configured);
+  if (!companyMetrics.enabled) return null;
+  if (!reportingShopPromise) {
+    reportingShopPromise = companyMetrics.listShops()
+      .then((shops) => (shops.length === 1 ? shops[0] : null))
+      .catch((err) => {
+        console.error('[reporting] resolving shop failed', err);
+        return null;
+      })
+      .then((shop) => {
+        if (!shop) reportingShopPromise = null; // retry next request
+        return shop;
+      });
+  }
+  return reportingShopPromise;
+}
+
+app.use('/api/reporting/v1', createReportingRouter({
+  companyMetrics,
+  staffStore,
+  resolveShop: resolveReportingShop,
+  getShopifyClient: getOfflineGraphqlClient,
+  getCompanies: (client) => fetchAllCompanies(client, { mode: 'commissions' }),
+  getCommissionReport: (client, month) => computeCommissionReport(client, month),
+}));
+
 // STAFF MANAGEMENT ENDPOINTS
 
 // Get all staff (managers only) or current user's staff info
@@ -2555,6 +2601,13 @@ async function buildCommissionReport(req, res, monthParam, onProgress) {
   const client = await getGraphqlClient(req, res);
   if (!client) return { status: 401, error: 'Unauthorized' };
 
+  return { status: 200, ...(await computeCommissionReport(client, monthParam, onProgress)) };
+}
+
+// The month's commission math, shared by the Reports page (above, manager +
+// PIN gated) and the reporting API (/api/reporting/v1/commissions, API-key
+// gated), so both always show the same numbers. No access checks here.
+async function computeCommissionReport(client, monthParam, onProgress) {
   const period = resolveReportMonth(monthParam);
   if (typeof onProgress === 'function') {
     onProgress({ phase: 'companies', done: 0, total: 1, label: 'Loading companies' });
@@ -2650,7 +2703,6 @@ async function buildCommissionReport(req, res, monthParam, onProgress) {
     : { enabled: false, ready: false, status: 'disabled' };
 
   return {
-    status: 200,
     period: {
       month: period.month,
       label: period.label,

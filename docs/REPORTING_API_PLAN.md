@@ -1,6 +1,6 @@
 # Reporting API (read-only, for an agent) — plan & notes
 
-Status: **PLAN — awaiting Isaac's approval. No code written yet.** (2026-11-17)
+Status: **Approved and built 2026-11-17.** Isaac: yes to commissions, one shared key, contact PII; **no notes** (numbers and data only). Built as described in docs/REPORTING_API.md. The notes field and `notes` decision #4 below were dropped.
 
 ## Ask
 One read-only API an external reporting agent can call with full visibility into
