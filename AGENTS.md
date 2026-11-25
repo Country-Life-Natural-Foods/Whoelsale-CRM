@@ -62,3 +62,9 @@
 - Shopify's Sidekick safety scan blocked the first deploy (2026-11-11). Data extensions must be strictly read-only (the `prepare_account_update` draft tool was removed). `instructions.md` and tool text must be factual with no steering ("never", "do not", "tell the user"). Contact details come only from `get_account_contacts`. `npm test` checks the extension files for these rules. See `docs/SIDEKICK.md`.
 - Saving or deleting notes and updating sample boxes require a claimed staff record (`requireStaffWriter`); author / sent-by come from the staff record.
 - Releasing the extension needs `shopify app deploy` (CLI 3.90+) from the org that owns the app.
+
+## API page (`/api-keys`)
+
+- Managers-only page (`public/api-keys.html`, linked as **API** in the Shopify sidebar nav) showing the app's public key (`SHOPIFY_API_KEY`, Client ID) and private key (`SHOPIFY_API_SECRET`, Client secret). The secret is masked until **Show**; both have Copy buttons.
+- Backend: `GET /api/admin/api-keys` — manager role + same 4-digit code gate as Commissions/Reports (`req.session.commissionsUnlockedFor`), `Cache-Control: no-store`, logs the viewing staff id. Not cached in `sessionStorage`.
+- Route is `/api-keys`, not `/api`, because `/api/*` is the backend namespace.
