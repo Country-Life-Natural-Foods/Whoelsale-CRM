@@ -2218,11 +2218,12 @@
             const incompleteNote = data.incomplete ? ' Partial run — click Run Map Sync again to continue.' : '';
             const skipNote = data.skipped ? `, skipped: ${data.skipped}` : '';
             const removedNote = data.deleted ? `, removed old pins: ${data.deleted}` : '';
+            const pruneNote = data.pruneNote ? ` ${data.pruneNote}` : '';
             window.AppDataCache?.invalidatePrefix('/api/locations');
             window.AppDataCache?.invalidatePrefix('/api/companies');
             const reloaded = await loadData(true);
             if (reloaded) {
-                showToast(`Sync complete. Created: ${data.created || 0}, updated: ${data.updated || 0}${skipNote}${removedNote}.${incompleteNote}`, 'success');
+                showToast(`Sync complete. Created: ${data.created || 0}, updated: ${data.updated || 0}${skipNote}${removedNote}.${pruneNote}${incompleteNote}`, 'success');
             }
         } catch (e) {
             showError('Sync failed: ' + e.message);

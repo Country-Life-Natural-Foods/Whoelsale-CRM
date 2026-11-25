@@ -83,10 +83,12 @@ Safety checks:
 
 - If a renamed location's new pin could not be made yet (geocode failed or the run ran out of time), the old pin is kept until a later run makes the new one.
 - Nothing is deleted when Shopify returns no companies or no mappable locations, when a company has more than 50 locations (the list would be incomplete), or when more than half of all pins look stale (`B2B_SYNC_PRUNE_MAX_RATIO`, default `0.5`).
-- Pins whose handle does not start with `b2b-` (made by hand in Shopify Admin) are never deleted.
+- Only handles the sync makes (`b2b-…-<location id>`) are ever deleted, so pins made by hand in Shopify Admin are left alone.
+- A pin changed after the sync started (minus five minutes for clock differences) is kept, so two syncs running at once can't delete each other's new pins.
+- A `B2B_SYNC_PRUNE_MAX_RATIO` that isn't a number above 0 and up to 1 falls back to `0.5`. Setting it to `1` turns this check off.
 - Set `B2B_SYNC_PRUNE=false` to turn removal off.
 
-The sync response includes `deleted`, the number of pins removed.
+The sync response includes `deleted`, the number of pins removed, and `pruneNote` when removal was skipped, paused or partly failed; the Run Map Sync message shows both.
 
 ## How to Run
 
