@@ -44,7 +44,13 @@ const { configureStaffStore } = require('../lib/staff-store');
 const { configureCompanyMetrics, normalizeShop } = require('../lib/company-metrics');
 const { shopifyGraphql, uniqueErrorMessages } = require('../lib/shopify-gql');
 const { createSidekickRouter } = require('../lib/sidekick');
-const { createReportingRouter, configuredKeys: configuredReportingKeys } = require('../lib/reporting-api');
+const {
+  createReportingRouter,
+  createReportingService,
+  configuredKeys: configuredReportingKeys,
+} = require('../lib/reporting-api');
+const { createOAuthRouter, createTokenService, configureOAuthStore } = require('../lib/mcp-oauth');
+const { createMcpRouter } = require('../lib/mcp-server');
 
 applyShopifyDeploymentEnv();
 
@@ -210,9 +216,11 @@ app.use(helmet({
 // The reporting API (/api/reporting) sets its own CORS policy: closed to
 // browsers unless REPORTING_API_CORS_ORIGINS lists an origin. The app-wide
 // `cors()` would answer every origin with `*`, so it skips that path.
+// The MCP connector (/mcp, /oauth/*) sets its own too.
 const appCors = cors();
 app.use((req, res, next) => {
-  if ((req.path || '').startsWith('/api/reporting/')) return next();
+  const p = req.path || '';
+  if (p.startsWith('/api/reporting/') || p === '/mcp' || p.startsWith('/oauth/')) return next();
   return appCors(req, res, next);
 });
 app.use(cookieParser());
@@ -293,6 +301,8 @@ function isCommissionAggregationRequest(req) {
   if (p === '/api/reports/commissions' || p === '/api/reports/commissions/export.csv') return true;
   if (p.startsWith('/api/analytics')) return true;
   if (p.startsWith('/api/reporting/')) return true;
+  // MCP tool calls run the same reporting queries.
+  if (req.method === 'POST' && p === '/mcp') return true;
   return (
     p.startsWith('/api/commissions/') &&
     p !== '/api/commissions/access' &&
@@ -2000,13 +2010,28 @@ async function resolveReportingShop() {
   return reportingShopPromise;
 }
 
-app.use('/api/reporting/v1', createReportingRouter({
+const reportingDeps = {
   companyMetrics,
   staffStore,
   resolveShop: resolveReportingShop,
   getShopifyClient: getOfflineGraphqlClient,
   getCompanies: (client) => fetchAllCompanies(client, { mode: 'commissions' }),
   getCommissionReport: (client, month) => computeCommissionReport(client, month),
+};
+
+app.use('/api/reporting/v1', createReportingRouter(reportingDeps));
+
+// MCP CONNECTOR
+// Remote MCP server for Claude (custom connector): OAuth discovery, consent
+// and token endpoints plus the Streamable HTTP endpoint at /mcp. Read only,
+// same data as the reporting API, gated by REPORTING_API_KEY. See
+// lib/mcp-server.js, lib/mcp-oauth.js and docs/MCP.md.
+const mcpOAuthStore = configureOAuthStore({ isProduction });
+const mcpTokens = createTokenService({ store: mcpOAuthStore });
+app.use(createOAuthRouter({ store: mcpOAuthStore, tokens: mcpTokens }));
+app.use('/mcp', createMcpRouter({
+  service: createReportingService(reportingDeps),
+  tokens: mcpTokens,
 }));
 
 // STAFF MANAGEMENT ENDPOINTS
