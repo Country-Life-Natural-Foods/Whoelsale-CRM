@@ -79,8 +79,19 @@
             <p id="private-key" class="key-value text-sm bg-zinc-50 border border-zinc-200 rounded-md px-3 py-2"></p>
         </div>
 
+        <div class="bg-white rounded-xl border border-zinc-200 p-5">
+            <div class="mb-2">
+                <p class="text-sm font-semibold flex items-center gap-2">Reporting API key
+                    <span class="inline-block px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-semibold">Secret</span>
+                </p>
+                <p class="text-xs text-zinc-500">For the external reporting agent · <code>REPORTING_API_KEY</code> · send as <code>Authorization: Bearer &lt;key&gt;</code></p>
+            </div>
+            <div id="reporting-keys" class="space-y-2"></div>
+            <p class="text-xs text-zinc-500 mt-2" id="reporting-base-url"></p>
+        </div>
+
         <p class="text-xs text-zinc-400" id="app-url"></p>
-        <p class="text-xs text-zinc-400">To rotate the secret, generate a new one in the Shopify Dev Dashboard and update <code>SHOPIFY_API_SECRET</code> in Vercel.</p>
+        <p class="text-xs text-zinc-400">To rotate the Shopify secret, generate a new one in the Shopify Dev Dashboard and update <code>SHOPIFY_API_SECRET</code> in Vercel. To rotate the Reporting key, set <code>REPORTING_API_KEY</code> to <code>old,new</code>, switch the client to the new key, then remove the old one (see <code>docs/REPORTING_API.md</code>).</p>
     </div>
 </div>
 
@@ -133,8 +144,49 @@
         document.getElementById('reveal-icon').textContent = revealed ? 'visibility_off' : 'visibility';
         document.getElementById('reveal-label').textContent = revealed ? 'Hide' : 'Show';
         document.getElementById('app-url').textContent = keys.appUrl ? `App URL: ${keys.appUrl}` : '';
+        renderReportingKeys();
         document.getElementById('message-view').classList.add('hidden');
         document.getElementById('keys-root').classList.remove('hidden');
+    }
+
+    const reportingRevealed = new Set();
+    const btnClass = 'bg-white border border-zinc-200 text-zinc-700 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-zinc-50 flex items-center gap-1.5 flex-shrink-0';
+
+    function renderReportingKeys() {
+        const list = document.getElementById('reporting-keys');
+        const reportingKeys = Array.isArray(keys.reportingKeys) ? keys.reportingKeys : [];
+        const base = keys.appUrl ? `${keys.appUrl.replace(/\/$/, '')}/api/reporting/v1` : '';
+        document.getElementById('reporting-base-url').textContent = base ? `Base URL: ${base}` : '';
+        list.replaceChildren();
+        if (!reportingKeys.length) {
+            const p = document.createElement('p');
+            p.className = 'key-value text-sm bg-zinc-50 border border-zinc-200 rounded-md px-3 py-2 text-zinc-500';
+            p.textContent = 'Not set — the Reporting API is off until REPORTING_API_KEY is set in Vercel.';
+            list.appendChild(p);
+            return;
+        }
+        reportingKeys.forEach((key, i) => {
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-2';
+            const value = document.createElement('p');
+            value.className = 'key-value text-sm bg-zinc-50 border border-zinc-200 rounded-md px-3 py-2 flex-1 min-w-0';
+            const shown = reportingRevealed.has(i);
+            const label = reportingKeys.length > 1 ? (i === 0 ? 'Old: ' : 'New: ') : '';
+            value.textContent = label + (shown ? key : mask(key));
+            const reveal = document.createElement('button');
+            reveal.className = btnClass;
+            reveal.innerHTML = `<span class="material-symbols-outlined text-sm">${shown ? 'visibility_off' : 'visibility'}</span>${shown ? 'Hide' : 'Show'}`;
+            reveal.addEventListener('click', () => {
+                if (shown) reportingRevealed.delete(i); else reportingRevealed.add(i);
+                renderReportingKeys();
+            });
+            const copy = document.createElement('button');
+            copy.className = btnClass;
+            copy.innerHTML = '<span class="material-symbols-outlined text-sm">content_copy</span>Copy';
+            copy.addEventListener('click', () => copyText(key, copy));
+            row.append(value, reveal, copy);
+            list.appendChild(row);
+        });
     }
 
     async function loadKeys() {

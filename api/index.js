@@ -44,7 +44,7 @@ const { configureStaffStore } = require('../lib/staff-store');
 const { configureCompanyMetrics, normalizeShop } = require('../lib/company-metrics');
 const { shopifyGraphql, uniqueErrorMessages } = require('../lib/shopify-gql');
 const { createSidekickRouter } = require('../lib/sidekick');
-const { createReportingRouter } = require('../lib/reporting-api');
+const { createReportingRouter, configuredKeys: configuredReportingKeys } = require('../lib/reporting-api');
 
 applyShopifyDeploymentEnv();
 
@@ -2752,7 +2752,8 @@ app.get('/api/reports/commissions', validateAuthenticatedSession, async (req, re
 });
 
 // App credentials for the admin team (API page). Public key = Shopify Client
-// ID (SHOPIFY_API_KEY); private key = Client secret (SHOPIFY_API_SECRET).
+// ID (SHOPIFY_API_KEY); private key = Client secret (SHOPIFY_API_SECRET);
+// plus the Reporting API key(s) (REPORTING_API_KEY).
 // Managers only, behind the same 4-digit code as Commissions/Reports.
 app.get('/api/admin/api-keys', validateAuthenticatedSession, async (req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -2777,6 +2778,8 @@ app.get('/api/admin/api-keys', validateAuthenticatedSession, async (req, res) =>
       publicKey: process.env.SHOPIFY_API_KEY || null,
       privateKey: process.env.SHOPIFY_API_SECRET || null,
       appUrl: process.env.SHOPIFY_APP_URL || null,
+      // Reporting API (lib/reporting-api.js): one key, or old + new while rotating.
+      reportingKeys: configuredReportingKeys(),
     });
   } catch (error) {
     console.error('GET /api/admin/api-keys', error);
