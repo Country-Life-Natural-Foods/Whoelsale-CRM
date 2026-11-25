@@ -44,7 +44,7 @@ const { configureStaffStore } = require('../lib/staff-store');
 const { configureCompanyMetrics, normalizeShop } = require('../lib/company-metrics');
 const { shopifyGraphql, uniqueErrorMessages } = require('../lib/shopify-gql');
 const { createSidekickRouter } = require('../lib/sidekick');
-const { createReportingRouter } = require('../lib/reporting-api');
+const { createReportingRouter, configuredKeys: configuredReportingKeys } = require('../lib/reporting-api');
 
 applyShopifyDeploymentEnv();
 
@@ -476,6 +476,7 @@ app.get(
 );
 app.get('/reports', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('reports.html'));
 app.get('/analytics', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('analytics.html'));
+app.get('/api-keys', ensureInstalledOnShop, shopifyCspHeaders, sendAppPage('api-keys.html'));
 
 const staffStore = configureStaffStore({ isProduction });
 
@@ -2746,6 +2747,42 @@ app.get('/api/reports/commissions', validateAuthenticatedSession, async (req, re
       return sendShopifyApiError(res, error);
     }
     console.error('GET /api/reports/commissions', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// App credentials for the admin team (API page). Public key = Shopify Client
+// ID (SHOPIFY_API_KEY); private key = Client secret (SHOPIFY_API_SECRET);
+// plus the Reporting API key(s) (REPORTING_API_KEY).
+// Managers only, behind the same 4-digit code as Commissions/Reports.
+app.get('/api/admin/api-keys', validateAuthenticatedSession, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const user = await getCurrentUser(req, res);
+    if (!(await isManager(user))) {
+      return res.status(403).json({ error: 'Only managers can view API keys.' });
+    }
+    const ownStaff = user?.shopifyUserId ? await staffStore.findByShopifyUserId(user.shopifyUserId) : null;
+    if (!ownStaff) {
+      return res.status(403).json({ error: 'Ask a manager to add you as staff before viewing API keys.' });
+    }
+    if (req.session?.commissionsUnlockedFor !== ownStaff.id) {
+      const pinInfo = await staffStore.getPinInfo(ownStaff.id);
+      return res.status(403).json({
+        error: pinInfo?.pinHash ? 'Enter your 4-digit code to view API keys.' : 'Set a 4-digit code to view API keys.',
+        code: pinInfo?.pinHash ? 'PIN_REQUIRED' : 'PIN_NOT_SET',
+      });
+    }
+    console.log(`API keys viewed by staff ${ownStaff.id}`);
+    res.json({
+      publicKey: process.env.SHOPIFY_API_KEY || null,
+      privateKey: process.env.SHOPIFY_API_SECRET || null,
+      appUrl: process.env.SHOPIFY_APP_URL || null,
+      // Reporting API (lib/reporting-api.js): one key, or old + new while rotating.
+      reportingKeys: configuredReportingKeys(),
+    });
+  } catch (error) {
+    console.error('GET /api/admin/api-keys', error);
     res.status(500).json({ error: error.message });
   }
 });

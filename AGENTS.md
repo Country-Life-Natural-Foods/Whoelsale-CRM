@@ -73,3 +73,9 @@
 - Raw rows: `companyMetrics.listOrders` / `listOrderLines` use keyset pagination on `(created_at, order_id[, line_id])`, with created_at carried at microsecond precision in an opaque base64url cursor.
 - The CRM's Neon database isn't visible through the Neon MCP connection (it's not in the Country Life, Isaac, or Vercel orgs); probably the Vercel-provisioned integration.
 - `REPORTING_API_KEY` set in Vercel (project `shopify-staff-assignment-app`, team Country Life's projects) on 2026-11-18 as a **sensitive** var for Production + Preview (format `rpt_…`, 68 chars). Value lives only in Vercel and with Isaac; never commit it. Takes effect on the next deploy.
+
+## API page (`/api-keys`)
+
+- Managers-only page (`public/api-keys.html`, linked as **API** in the Shopify sidebar nav) showing the app's public key (`SHOPIFY_API_KEY`, Client ID), private key (`SHOPIFY_API_SECRET`, Client secret), and the Reporting API key(s) (`REPORTING_API_KEY`, parsed with `configuredKeys()` so both old and new show while rotating). Secrets are masked until **Show**; each has a Copy button.
+- Backend: `GET /api/admin/api-keys` — manager role + same 4-digit code gate as Commissions/Reports (`req.session.commissionsUnlockedFor`), `Cache-Control: no-store`, logs the viewing staff id. Not cached in `sessionStorage`.
+- Route is `/api-keys`, not `/api`, because `/api/*` is the backend namespace.
