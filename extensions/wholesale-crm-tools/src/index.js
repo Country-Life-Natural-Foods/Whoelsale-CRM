@@ -50,6 +50,12 @@ export default () => {
   shopify.tools.register('accounts_needing_follow_up', async ({ kind, rep, limit } = {}) =>
     getJson(`/api/sidekick/follow-ups${qs({ kind, rep, limit })}`));
 
+  shopify.tools.register('list_open_tasks', async ({ kind, rep, limit } = {}) =>
+    getJson(`/api/sidekick/tasks${qs({ kind, rep, limit })}`));
+
+  shopify.tools.register('get_last_contact', async ({ id } = {}) =>
+    getJson(`/api/sidekick/accounts/${accountPath(id)}/last-contact`));
+
   shopify.tools.register('account_buying_intel', async ({ id } = {}) =>
     getJson(`/api/sidekick/accounts/${accountPath(id)}/buying`));
 
